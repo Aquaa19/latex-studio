@@ -8,7 +8,7 @@ const puppeteer = require("puppeteer"); // <-- new
 
 const isWindows = os.platform() === "win32";
 const findCmd = isWindows ? "where" : "which";
-const PORT = 2345;
+const PORT = process.env.PORT || 2345;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -279,8 +279,8 @@ const server = http.createServer((req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`\n✅ LaTeX + HTML → PDF server running on http://localhost:${PORT}`);
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`\n✅ LaTeX + HTML → PDF server running on http://0.0.0.0:${PORT}`);
   console.log("Checking LaTeX engines...");
   for (const eng of ["pdflatex", "xelatex", "lualatex"]) {
     try { execSync(`${findCmd} ${eng}`, { stdio: "pipe" }); console.log(`  ✓ ${eng}`); }
