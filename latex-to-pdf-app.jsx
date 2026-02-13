@@ -9,6 +9,8 @@ import "react-pdf/dist/Page/TextLayer.css";
 // Set up the PDF.js worker from a CDN
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:2345";
+
 // ---------- LaTeX package detection (unchanged) ----------
 const KNOWN_PACKAGES = {
   "\\frac": "amsmath", "\\dfrac": "amsmath", "\\tfrac": "amsmath",
@@ -317,8 +319,6 @@ const HTML_TEMPLATES = {
 </html>`,
 };
 
-const SERVER = "http://localhost:2345";
-
 // ---------- Custom PDF Viewer (unchanged) ----------
 function CustomPDFViewer({ url }) {
   const [numPages, setNumPages] = useState(null);
@@ -618,8 +618,8 @@ export default function LaTeXApp() {
     setCompiledWith(currentMode === 'latex' ? compileEngine : 'html');
 
     const url = currentMode === 'latex'
-      ? `${SERVER}/compile`
-      : `${SERVER}/compile-html`;
+      ? `${API_BASE_URL}/compile`
+      : `${API_BASE_URL}/compile-html`;
     const body = currentMode === 'latex'
       ? JSON.stringify({ code: currentCode, engine: compileEngine })
       : JSON.stringify({ html: currentCode });
@@ -638,7 +638,7 @@ export default function LaTeXApp() {
       .then((data) => {
         if (data.success) {
           const timestamp = Date.now();
-          const freshUrl = `${SERVER}/pdf?v=${data.version}&t=${timestamp}`;
+          const freshUrl = `${API_BASE_URL}/pdf?v=${data.version}&t=${timestamp}`;
           setPdfUrl(freshUrl);
           setActiveTab("preview");
           showToast("Compiled successfully!");
@@ -650,7 +650,7 @@ export default function LaTeXApp() {
       .catch((err) => {
         const msg = err.error || err.log || String(err);
         setError(msg.includes("Failed to fetch")
-          ? "Could not connect to server. Make sure node server.js is running on port 2345."
+          ? `Could not connect to server. Ensure the backend is running at ${API_BASE_URL}.`
           : msg);
         setCompiling(false);
       });
@@ -1637,7 +1637,7 @@ export default function LaTeXApp() {
                 </span>
                 <div style={{ display: "flex", gap: 6 }}>
                   <a
-                    href={`${SERVER}/pdf`}
+                    href={`${API_BASE_URL}/pdf`}
                     target="_blank"
                     rel="noopener noreferrer"
                     style={{
@@ -1651,7 +1651,7 @@ export default function LaTeXApp() {
                     ↗ Open
                   </a>
                   <a
-                    href={`${SERVER}/download`}
+                    href={`${API_BASE_URL}/download`}
                     download="document.pdf"
                     style={{
                       background: "rgba(34,197,94,0.1)",
@@ -1702,7 +1702,7 @@ export default function LaTeXApp() {
                   <strong style={{ color: "#7c3aed" }}>Ctrl+Enter</strong>
                 </div>
                 <div style={{ fontSize: 10, color: "#1e1e30", marginTop: 6 }}>
-                  Server: localhost:2345
+                  Server: {API_BASE_URL}
                 </div>
               </div>
             )
