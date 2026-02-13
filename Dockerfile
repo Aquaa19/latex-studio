@@ -8,7 +8,7 @@ RUN apt-get update && \
         ghostscript \
         fonts-lmodern \
         fonts-dejavu-core \
-        # Puppeteer / Chromium runtime deps
+        fonts-noto-core \
         libasound2 \
         libatk1.0-0 \
         libcairo2 \
