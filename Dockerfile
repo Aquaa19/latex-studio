@@ -8,6 +8,24 @@ RUN apt-get update && \
         ghostscript \
         fonts-lmodern \
         fonts-dejavu-core \
+        # Puppeteer / Chromium runtime deps
+        libasound2 \
+        libatk1.0-0 \
+        libcairo2 \
+        libcups2 \
+        libdrm2 \
+        libxkbcommon0 \
+        libxcomposite1 \
+        libxrandr2 \
+        libxdamage1 \
+        libxfixes3 \
+        libxext6 \
+        libx11-6 \
+        libx11-xcb1 \
+        libxcb1 \
+        libxss1 \
+        libnss3 \
+        libgtk-3-0 \
         && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Set workdir
