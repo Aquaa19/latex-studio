@@ -4,7 +4,50 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const crypto = require("crypto");
+const zlib = require("zlib");
 const puppeteer = require("puppeteer"); // <-- new
+
+function parseSyncTeX(synctexGzPath) {
+  try {
+    if (!fs.existsSync(synctexGzPath)) return null;
+    const buffer = fs.readFileSync(synctexGzPath);
+    const decompressed = zlib.gunzipSync(buffer).toString('utf-8');
+
+    const lineToPdf = {};
+    const pdfToLine = {};
+    const lines = decompressed.split('\n');
+    let currentPage = 1;
+
+    for (let i = 0; i < lines.length; i++) {
+      const row = lines[i];
+      if (row.startsWith('Sheet:')) {
+        currentPage = parseInt(row.substring(6).trim(), 10) || 1;
+      }
+      if (row.startsWith('g') || row.startsWith('x')) {
+        const parts = row.substring(1).split(',');
+        if (parts.length >= 4) {
+          const lineNum = parseInt(parts[1], 10);
+          const x = parseFloat(parts[2]);
+          const y = parseFloat(parts[3]);
+
+          if (lineNum > 0) {
+            if (!lineToPdf[lineNum]) {
+              lineToPdf[lineNum] = { page: currentPage, x, y };
+            }
+            if (!pdfToLine[currentPage]) {
+              pdfToLine[currentPage] = [];
+            }
+            pdfToLine[currentPage].push({ line: lineNum, x, y });
+          }
+        }
+      }
+    }
+    return { lineToPdf, pdfToLine };
+  } catch (err) {
+    console.error("Failed to parse SyncTeX:", err);
+    return null;
+  }
+}
 
 const isWindows = os.platform() === "win32";
 const findCmd = isWindows ? "where" : "which";
@@ -49,19 +92,39 @@ function isValidPdfFile(filePath) {
   return buffer.toString() === '%PDF';
 }
 
-function compileLaTeX(code, engine, callback) {
+function compileLaTeX(code, engine, files, callback) {
   const tmpDir = createTempDir();
   fs.mkdirSync(tmpDir, { recursive: true });
 
   if (hasLocalFonts) {
     try {
-      const files = fs.readdirSync(PROJECT_FONTS_DIR);
-      for (const file of files) {
+      const filesList = fs.readdirSync(PROJECT_FONTS_DIR);
+      for (const file of filesList) {
         const src = path.join(PROJECT_FONTS_DIR, file);
         const dest = path.join(tmpDir, file);
         fs.copyFileSync(src, dest);
       }
     } catch (e) {}
+  }
+
+  // Write nested project files (multi-file project support)
+  if (files && Array.isArray(files)) {
+    for (const f of files) {
+      if (f.path && typeof f.content === "string") {
+        const fullPath = path.join(tmpDir, f.path);
+        try {
+          fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+          if (f.content.startsWith("data:") && f.content.includes(";base64,")) {
+            const base64Data = f.content.split(";base64,")[1];
+            fs.writeFileSync(fullPath, Buffer.from(base64Data, "base64"));
+          } else {
+            fs.writeFileSync(fullPath, f.content, "utf-8");
+          }
+        } catch (err) {
+          console.error(`Failed to write project file ${f.path}:`, err);
+        }
+      }
+    }
   }
 
   const texFile = path.join(tmpDir, "document.tex");
@@ -80,8 +143,8 @@ function compileLaTeX(code, engine, callback) {
 
   const execOpts = { timeout: 120000, maxBuffer: 10 * 1024 * 1024, shell: true, env };
   const baseCmd = isWindows
-    ? `cd /d "${tmpDir}" && ${engineCmd} -interaction=nonstopmode -halt-on-error -shell-escape document.tex`
-    : `cd "${tmpDir}" && ${engineCmd} -interaction=nonstopmode -halt-on-error -shell-escape document.tex`;
+    ? `cd /d "${tmpDir}" && ${engineCmd} -interaction=nonstopmode -halt-on-error -shell-escape -synctex=1 document.tex`
+    : `cd "${tmpDir}" && ${engineCmd} -interaction=nonstopmode -halt-on-error -shell-escape -synctex=1 document.tex`;
 
   function runPass(cmd, cb) {
     exec(cmd, execOpts, (err, stdout, stderr) => {
@@ -107,8 +170,10 @@ function compileLaTeX(code, engine, callback) {
         return callback({ error: errorLines || 'Second pass failed', log: logContent });
       }
       const pdfData = fs.readFileSync(pdfFile);
+      const synctexGzFile = path.join(tmpDir, "document.synctex.gz");
+      const synctexData = parseSyncTeX(synctexGzFile);
       cleanUp(tmpDir);
-      callback(null, pdfData);
+      callback(null, pdfData, synctexData);
     });
   });
 }
@@ -173,14 +238,14 @@ const server = http.createServer((req, res) => {
     req.on("data", (chunk) => (body += chunk));
     req.on("end", () => {
       try {
-        const { code, engine } = JSON.parse(body);
+        const { code, engine, files } = JSON.parse(body);
         if (!code || typeof code !== "string") {
           res.writeHead(400, { ...corsHeaders, "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "No LaTeX code provided" }));
           return;
         }
         console.log(`[${new Date().toISOString()}] Compiling LaTeX with ${engine || "pdflatex"}...`);
-        compileLaTeX(code, engine || "pdflatex", (err, pdfData) => {
+        compileLaTeX(code, engine || "pdflatex", files || null, (err, pdfData, synctexData) => {
           if (err) {
             console.log(`[${new Date().toISOString()}] LaTeX compilation failed`);
             res.writeHead(422, { ...corsHeaders, "Content-Type": "application/json" });
@@ -190,7 +255,7 @@ const server = http.createServer((req, res) => {
             pdfVersion++;
             console.log(`[${new Date().toISOString()}] LaTeX OK (${pdfData.length} bytes, v${pdfVersion})`);
             res.writeHead(200, { ...corsHeaders, "Content-Type": "application/json" });
-            res.end(JSON.stringify({ success: true, version: pdfVersion, size: pdfData.length }));
+            res.end(JSON.stringify({ success: true, version: pdfVersion, size: pdfData.length, synctex: synctexData }));
           }
         });
       } catch (e) {

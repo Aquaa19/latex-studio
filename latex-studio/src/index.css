@@ -1,25 +1,28 @@
 :root {
-  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
   line-height: 1.5;
   font-weight: 400;
 
   color-scheme: dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #08080e;
+  color: #e4e4e7;
+  background-color: #09090b;
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-}
 
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-a:hover {
-  color: #535bf2;
+  /* Premium Slate/Zinc Color System */
+  --primary-solid: #3b82f6;      /* Cobalt blue */
+  --accent-color: #6366f1;       /* Indigo */
+  --bg-dark: #09090b;            /* Zinc 950 */
+  --bg-panel: #121216;           /* Refined editor panel bg */
+  --bg-sidebar: #18181b;         /* Zinc 900 */
+  --border-glass: #27272a;       /* Zinc 800 */
+  --border-active: #3f3f46;      /* Zinc 700 */
+  --text-primary: #fafafa;       /* Zinc 50 */
+  --text-secondary: #a1a1aa;     /* Zinc 400 */
+  --text-muted: #52525b;         /* Zinc 600 */
 }
 
 body {
@@ -28,8 +31,104 @@ body {
   min-width: 320px;
   min-height: 100vh;
   overflow: hidden;
+  background: var(--bg-dark);
 }
 
 * {
   box-sizing: border-box;
+}
+
+/* Subtle, clean scrollbars */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-glass);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-active);
+}
+
+/* Professional Circular Spinner */
+.neon-spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid rgba(255, 255, 255, 0.05);
+  border-radius: 50%;
+  border-top-color: var(--primary-solid);
+  animation: spinner-spin 0.8s linear infinite;
+}
+
+@keyframes spinner-spin {
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+/* Pulsing Status Dot */
+@keyframes status-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 6px rgba(16, 185, 129, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+  }
+}
+.status-pulse-dot {
+  animation: status-pulse 2s infinite;
+}
+
+/* Premium Layout Panels */
+.glass-card {
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border-glass);
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+  transition: all 0.2s ease;
+}
+
+.glass-btn {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border-glass);
+  color: var(--text-primary);
+  border-left: 2px solid transparent !important;
+  transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  cursor: pointer;
+}
+.glass-btn:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--border-active);
+  border-left-color: var(--primary-solid) !important;
+  padding-left: 15px !important;
+}
+.glass-btn:active {
+  transform: scale(0.98);
+}
+
+/* Elegant Shimmer loader */
+.shimmer-bg {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.01) 25%,
+    rgba(255, 255, 255, 0.03) 50%,
+    rgba(255, 255, 255, 0.01) 25%
+  );
+  background-size: 200% 100%;
+  animation: shimmer-load 1.8s infinite linear;
+}
+@keyframes shimmer-load {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
 }

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 // Important: You must run 'npm install react-pdf'
 import { Document, Page, pdfjs } from 'react-pdf';
+import Editor from "@monaco-editor/react";
 
 // Import CSS for PDF layers (standard with react-pdf)
 import "react-pdf/dist/Page/AnnotationLayer.css";
@@ -320,21 +321,139 @@ const HTML_TEMPLATES = {
 };
 
 // ---------- Custom PDF Viewer (unchanged) ----------
-function CustomPDFViewer({ url }) {
+function CustomPDFViewer({ url, synctexData, onPageDoubleClick, viewerRef }) {
+  const [pdf, setPdf] = useState(null);
   const [numPages, setNumPages] = useState(null);
   const [pageNumber, setPageNumber] = useState(1);
   const [scale, setScale] = useState(1.0);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const containerRef = useRef(null);
+  const canvasRefs = useRef({});
 
-  function onDocumentLoadSuccess({ numPages }) {
-    setNumPages(numPages);
-    setPageNumber(1);
+  // Synchronously handle coordinate scrolling (forward sync)
+  useEffect(() => {
+    if (viewerRef) {
+      viewerRef.current = {
+        scrollToPageCoordinate: (pageNum, yPt) => {
+          setPageNumber(pageNum);
+          setTimeout(() => {
+            const canvas = canvasRefs.current[pageNum];
+            if (canvas && containerRef.current) {
+              const rect = canvas.getBoundingClientRect();
+              const container = containerRef.current;
+              const ratio = rect.height / 845;
+              const scrollY = canvas.offsetTop + (yPt * ratio) - (container.clientHeight / 2);
+              container.scrollTo({ top: Math.max(0, scrollY), behavior: "smooth" });
+
+              // Highlight outline flash
+              const highlight = document.createElement("div");
+              highlight.style.position = "absolute";
+              highlight.style.left = `20px`;
+              highlight.style.top = `${canvas.offsetTop + (yPt * ratio)}px`;
+              highlight.style.width = "calc(100% - 40px)";
+              highlight.style.height = "18px";
+              highlight.style.background = "rgba(59, 130, 246, 0.18)";
+              highlight.style.borderLeft = "4px solid var(--primary-solid)";
+              highlight.style.pointerEvents = "none";
+              highlight.style.zIndex = "10";
+              highlight.style.transition = "opacity 0.8s ease";
+              canvas.parentNode.appendChild(highlight);
+              setTimeout(() => {
+                highlight.style.opacity = "0";
+                setTimeout(() => highlight.remove(), 800);
+              }, 1200);
+            }
+          }, 100);
+        }
+      };
+    }
+  }, [pdf, viewerRef]);
+
+  // Load document
+  useEffect(() => {
+    if (!url) return;
+    setLoading(true);
     setError(null);
-  }
 
-  function onDocumentLoadError(err) {
-    setError(err.message);
-  }
+    const loadDoc = async () => {
+      try {
+        let pdfjs = window.pdfjsLib;
+        if (!pdfjs) {
+          for (let i = 0; i < 30; i++) {
+            await new Promise(r => setTimeout(r, 100));
+            if (window.pdfjsLib) {
+              pdfjs = window.pdfjsLib;
+              break;
+            }
+          }
+        }
+        if (!pdfjs) {
+          throw new Error("PDF.js failed to load from CDN.");
+        }
+
+        const loadingTask = pdfjs.getDocument(url);
+        const pdfDoc = await loadingTask.promise;
+        setPdf(pdfDoc);
+        setNumPages(pdfDoc.numPages);
+        setPageNumber(1);
+        setLoading(false);
+      } catch (err) {
+        console.error("Error loading PDF:", err);
+        setError(err.message || String(err));
+        setLoading(false);
+      }
+    };
+    loadDoc();
+  }, [url]);
+
+  // Render active page canvas
+  useEffect(() => {
+    if (!pdf) return;
+    let active = true;
+
+    const renderPage = async () => {
+      try {
+        const page = await pdf.getPage(pageNumber);
+        if (!active) return;
+
+        const canvas = canvasRefs.current[pageNumber];
+        if (!canvas) return;
+
+        const viewport = page.getViewport({ scale });
+        const context = canvas.getContext("2d");
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+
+        const renderContext = {
+          canvasContext: context,
+          viewport: viewport,
+        };
+        await page.render(renderContext).promise;
+      } catch (err) {
+        console.error("Page render error:", err);
+      }
+    };
+    renderPage();
+
+    return () => { active = false; };
+  }, [pdf, pageNumber, scale]);
+
+  const onDoubleClick = (e) => {
+    if (!pdf || !synctexData) return;
+    const canvas = canvasRefs.current[pageNumber];
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const clickY = e.clientY - rect.top;
+
+    // Convert pixels to standard LaTeX page points (A4 ratio approximation)
+    const pdfX = (clickX / rect.width) * 595;
+    const pdfY = (clickY / rect.height) * 842;
+
+    onPageDoubleClick(pageNumber, pdfX, pdfY);
+  };
 
   const controlBtnStyle = {
     background: "rgba(22,22,31,0.6)",
@@ -363,6 +482,7 @@ function CustomPDFViewer({ url }) {
         display: "flex",
         justifyContent: "space-between",
         alignItems: "center",
+        flexShrink: 0,
       }}>
         <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
           <button
@@ -380,6 +500,10 @@ function CustomPDFViewer({ url }) {
           >▶</button>
         </div>
 
+        <span style={{ fontSize: 9, color: "var(--primary-solid)", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 }}>
+          Double Click Preview to Sync Editor
+        </span>
+
         <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
           <button onClick={() => setScale(s => Math.max(0.5, s - 0.1))} style={controlBtnStyle}>−</button>
           <span style={{ fontSize: "12px", color: "#a0a0b0", minWidth: "40px", textAlign: "center" }}>
@@ -389,36 +513,37 @@ function CustomPDFViewer({ url }) {
         </div>
       </div>
 
-      <div style={{ flex: 1, overflow: "auto", padding: "20px", display: "flex", flexDirection: "column", alignItems: "center" }}>
-        {error ? (
+      <div
+        ref={containerRef}
+        style={{ flex: 1, overflow: "auto", padding: "20px", display: "flex", flexDirection: "column", alignItems: "center", position: "relative" }}
+      >
+        {loading ? (
+          <div style={{ color: "var(--primary-solid)", marginTop: 40, fontSize: 13, fontWeight: 500, display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "var(--primary-solid)", borderRadius: "50%", animation: "spin 0.7s linear infinite", display: "inline-block" }} />
+            Rendering PDF...
+          </div>
+        ) : error ? (
           <div style={{ color: "#f87171", textAlign: "center", marginTop: 40 }}>
-            <div style={{ fontSize: 40, marginBottom: 10 }}>⚠️</div>
+            <div style={{ fontSize: 32, marginBottom: 10 }}>⚠️</div>
             <p>Failed to render PDF: {error}</p>
-            <p style={{ fontSize: 12, opacity: 0.7 }}>Try refreshing or checking if the fonts are installed locally.</p>
           </div>
         ) : (
-          <Document
-            file={url}
-            onLoadSuccess={onDocumentLoadSuccess}
-            onLoadError={onDocumentLoadError}
-            loading={<div style={{ color: "#7c3aed", marginTop: 40 }}>Initializing PDF View...</div>}
-          >
-            <Page
-              pageNumber={pageNumber}
-              scale={scale}
-              renderAnnotationLayer={false}
-              renderTextLayer={true}
-              className="pdf-page-shadow"
-            />
-          </Document>
+          pdf && (
+            <div style={{ position: "relative" }} onDoubleClick={onDoubleClick}>
+              <canvas
+                ref={el => { canvasRefs.current[pageNumber] = el; }}
+                style={{
+                  boxShadow: "0 10px 40px rgba(0,0,0,0.6)",
+                  borderRadius: "4px",
+                  background: "#fff",
+                  display: "block",
+                  cursor: "crosshair",
+                }}
+              />
+            </div>
+          )
         )}
       </div>
-      <style>{`
-        .pdf-page-shadow canvas {
-          box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-          border-radius: 4px;
-        }
-      `}</style>
     </div>
   );
 }
@@ -526,8 +651,34 @@ function Tooltip({ children, text }) {
 
 // ---------- Main App Component ----------
 export default function LaTeXApp() {
-  const [mode, setMode] = useState('latex');
-  const [code, setCode] = useState(LATEX_TEMPLATES.blank);
+  // Default project files setup
+  const DEFAULT_PROJECT_FILES = [
+    { id: "1", name: "main.tex", content: LATEX_TEMPLATES.blank }
+  ];
+
+  // Load initial workspace state from LocalStorage
+  const loadWorkspaceState = () => {
+    try {
+      const saved = localStorage.getItem("latex-studio-workspace");
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch (e) {
+      console.error("Failed to load workspace state:", e);
+    }
+    return null;
+  };
+
+  const initialState = loadWorkspaceState() || {};
+
+  // Core persistent states
+  const [projectMode, setProjectMode] = useState(initialState.projectMode ?? false);
+  const [mode, setMode] = useState(initialState.mode ?? 'latex');
+  const [projectFiles, setProjectFiles] = useState(initialState.projectFiles ?? DEFAULT_PROJECT_FILES);
+  const [activeFileId, setActiveFileId] = useState(initialState.activeFileId ?? "1");
+  const [basicCode, setBasicCode] = useState(initialState.basicCode ?? LATEX_TEMPLATES.blank);
+
+  // Transient states
   const [pdfUrl, setPdfUrl] = useState(null);
   const [compiling, setCompiling] = useState(false);
   const [error, setError] = useState(null);
@@ -540,18 +691,68 @@ export default function LaTeXApp() {
   const [showScrollTop, setShowScrollTop] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
+  const [synctexData, setSynctexData] = useState(null);
 
   const textareaRef = useRef(null);
   const highlightRef = useRef(null);
   const lineRef = useRef(null);
   const mainContainerRef = useRef(null);
+  const editorRef = useRef(null);
+  const monacoRef = useRef(null);
+  const pdfViewerRef = useRef(null);
+
+  // Load PDF.js dynamically from CDN
+  useEffect(() => {
+    if (window.pdfjsLib) return;
+    const script = document.createElement("script");
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+    script.onload = () => {
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+    };
+    document.head.appendChild(script);
+  }, []);
+
+  // Derived code block values
+  const activeFile = projectFiles.find(f => f.id === activeFileId) || projectFiles[0] || DEFAULT_PROJECT_FILES[0];
+  const code = projectMode ? activeFile.content : basicCode;
+
+  const setCode = (newVal) => {
+    if (projectMode) {
+      setProjectFiles(prev => prev.map(f => f.id === activeFile.id ? { ...f, content: newVal } : f));
+    } else {
+      setBasicCode(newVal);
+    }
+  };
 
   const codeRef = useRef(code);
   const modeRef = useRef(mode);
   const engineRef = useRef(compileEngine);
+  const projectModeRef = useRef(projectMode);
+  const projectFilesRef = useRef(projectFiles);
+  const activeFileIdRef = useRef(activeFileId);
+
   useEffect(() => { codeRef.current = code; }, [code]);
   useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => { engineRef.current = compileEngine; }, [compileEngine]);
+  useEffect(() => { projectModeRef.current = projectMode; }, [projectMode]);
+  useEffect(() => { projectFilesRef.current = projectFiles; }, [projectFiles]);
+  useEffect(() => { activeFileIdRef.current = activeFileId; }, [activeFileId]);
+
+  // Persistence Auto-save Effect
+  useEffect(() => {
+    const stateToSave = {
+      projectMode,
+      mode,
+      projectFiles,
+      activeFileId,
+      basicCode,
+    };
+    try {
+      localStorage.setItem("latex-studio-workspace", JSON.stringify(stateToSave));
+    } catch (e) {
+      console.error("Failed to auto-save workspace state:", e);
+    }
+  }, [projectMode, mode, projectFiles, activeFileId, basicCode]);
 
   const lineCount = code.split("\n").length;
 
@@ -607,22 +808,65 @@ export default function LaTeXApp() {
     }
   }, []);
 
+  const parseLaTeXErrors = (logText) => {
+    if (!logText) return [];
+    const markers = [];
+    const lines = logText.split("\n");
+    let currentError = null;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (line.startsWith("! ")) {
+        currentError = {
+          message: line.substring(2).trim(),
+          lineNumber: 1,
+        };
+      } else if (currentError && line.trim().startsWith("l.")) {
+        const match = line.match(/l\.(\d+)/);
+        if (match) {
+          currentError.lineNumber = parseInt(match[1], 10);
+        }
+        markers.push(currentError);
+        currentError = null;
+      } else if (currentError && line.includes("on input line")) {
+        const match = line.match(/on input line\s+(\d+)/i);
+        if (match) {
+          currentError.lineNumber = parseInt(match[1], 10);
+        }
+        markers.push(currentError);
+        currentError = null;
+      }
+    }
+    return markers;
+  };
+
   // ---------- Compile handler ----------
   const doCompile = useCallback(() => {
-    const currentCode = codeRef.current;
     const currentMode = modeRef.current;
+    const currentEngine = engineRef.current;
+    const isProj = projectModeRef.current;
+    const files = projectFilesRef.current;
+    const actId = activeFileIdRef.current;
 
     setCompiling(true);
     setError(null);
     setPdfUrl(null);
-    setCompiledWith(currentMode === 'latex' ? compileEngine : 'html');
+    setCompiledWith(currentMode === 'latex' ? currentEngine : 'html');
+
+    const activeF = files.find(f => f.id === actId) || files[0];
+    const mainF = files.find(f => f.name === "main.tex") || activeF;
+
+    const compileCode = isProj ? mainF.content : codeRef.current;
+    const filesData = isProj
+      ? files.filter(f => f.id !== mainF.id).map(f => ({ path: f.name, content: f.content }))
+      : null;
 
     const url = currentMode === 'latex'
       ? `${API_BASE_URL}/compile`
       : `${API_BASE_URL}/compile-html`;
     const body = currentMode === 'latex'
-      ? JSON.stringify({ code: currentCode, engine: compileEngine })
-      : JSON.stringify({ html: currentCode });
+      ? JSON.stringify({ code: compileCode, engine: currentEngine, files: filesData })
+      : JSON.stringify({ html: compileCode });
 
     fetch(url, {
       method: "POST",
@@ -640,10 +884,32 @@ export default function LaTeXApp() {
           const timestamp = Date.now();
           const freshUrl = `${API_BASE_URL}/pdf?v=${data.version}&t=${timestamp}`;
           setPdfUrl(freshUrl);
+          setSynctexData(data.synctex || null);
           setActiveTab("preview");
           showToast("Compiled successfully!");
+
+          // Clear any Monaco error markers
+          if (editorRef.current && monacoRef.current) {
+            const model = editorRef.current.getModel();
+            monacoRef.current.editor.setModelMarkers(model, "latex-diagnostics", []);
+          }
         } else {
           setError(data.error || data.log || "Compilation failed");
+
+          // Display markers in editor if compilation log exists
+          if (editorRef.current && monacoRef.current && data.log) {
+            const model = editorRef.current.getModel();
+            const errors = parseLaTeXErrors(data.log);
+            const monacoMarkers = errors.map(err => ({
+              startLineNumber: err.lineNumber,
+              endLineNumber: err.lineNumber,
+              startColumn: 1,
+              endColumn: 100,
+              message: err.message,
+              severity: monacoRef.current.MarkerSeverity.Error,
+            }));
+            monacoRef.current.editor.setModelMarkers(model, "latex-diagnostics", monacoMarkers);
+          }
         }
         setCompiling(false);
       })
@@ -652,6 +918,21 @@ export default function LaTeXApp() {
         setError(msg.includes("Failed to fetch")
           ? `Could not connect to server. Ensure the backend is running at ${API_BASE_URL}.`
           : msg);
+
+        // Display markers on catch if log is available
+        if (editorRef.current && monacoRef.current && err.log) {
+          const model = editorRef.current.getModel();
+          const errors = parseLaTeXErrors(err.log);
+          const monacoMarkers = errors.map(e => ({
+            startLineNumber: e.lineNumber,
+            endLineNumber: e.lineNumber,
+            startColumn: 1,
+            endColumn: 100,
+            message: e.message,
+            severity: monacoRef.current.MarkerSeverity.Error,
+          }));
+          monacoRef.current.editor.setModelMarkers(model, "latex-diagnostics", monacoMarkers);
+        }
         setCompiling(false);
       });
   }, [compileEngine]);
@@ -749,21 +1030,126 @@ export default function LaTeXApp() {
     setSuggestions(null);
   };
 
-  // ---------- Key handler ----------
-  const handleKeyDown = (e) => {
-    if (e.key === "Tab") {
-      e.preventDefault();
-      const start = e.target.selectionStart;
-      const end = e.target.selectionEnd;
-      const newCode = code.substring(0, start) + "  " + code.substring(end);
-      setCode(newCode);
-      codeRef.current = newCode;
-      setTimeout(() => { e.target.selectionStart = e.target.selectionEnd = start + 2; }, 0);
-    }
-    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-      e.preventDefault();
+  const handleEditorDidMount = (editor, monaco) => {
+    editorRef.current = editor;
+    monacoRef.current = monaco;
+
+    monaco.editor.defineTheme("latex-studio-dark", {
+      base: "vs-dark",
+      inherit: true,
+      rules: [
+        { token: "comment", foreground: "6e7681", fontStyle: "italic" },
+        { token: "keyword", foreground: "3b82f6", fontWeight: "bold" },
+        { token: "number", foreground: "60a5fa" },
+        { token: "string", foreground: "a5b4fc" },
+      ],
+      colors: {
+        "editor.background": "#121216",
+        "editor.foreground": "#e4e4e7",
+        "editor.lineHighlightBackground": "#18181b",
+        "editorGutter.background": "#121216",
+        "editorLineNumber.foreground": "#52525b",
+        "editorLineNumber.activeForeground": "#a1a1aa",
+      },
+    });
+    monaco.editor.setTheme("latex-studio-dark");
+
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
       handleCompile();
+    });
+
+    editor.onDidChangeCursorPosition((e) => {
+      const line = e.position.lineNumber;
+      // Trigger forward sync
+      if (synctexDataRef.current && synctexDataRef.current.lineToPdf) {
+        const match = synctexDataRef.current.lineToPdf[line];
+        if (match && pdfViewerRef.current) {
+          pdfViewerRef.current.scrollToPageCoordinate(match.page, match.y);
+        }
+      }
+    });
+  };
+
+  const synctexDataRef = useRef(synctexData);
+  useEffect(() => { synctexDataRef.current = synctexData; }, [synctexData]);
+
+  const handlePageDoubleClick = (pageNum, pdfX, pdfY) => {
+    if (synctexData && synctexData.pdfToLine && synctexData.pdfToLine[pageNum]) {
+      const candidates = synctexData.pdfToLine[pageNum];
+      let closest = null;
+      let minDist = Infinity;
+      for (const cand of candidates) {
+        const dx = pdfX - cand.x;
+        const dy = pdfY - cand.y;
+        const dist = dx * dx + dy * dy;
+        if (dist < minDist) {
+          minDist = dist;
+          closest = cand;
+        }
+      }
+      if (closest) {
+        if (editorRef.current) {
+          editorRef.current.revealLineInCenter(closest.line);
+          editorRef.current.setPosition({ lineNumber: closest.line, column: 1 });
+          editorRef.current.focus();
+          showToast(`Jumped to line ${closest.line}`);
+        }
+      }
     }
+  };
+
+  const handleImageUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    if (projectFiles.some(f => f.name.toLowerCase() === file.name.toLowerCase())) {
+      showToast("File already exists!");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const newId = Date.now().toString();
+      setProjectFiles(prev => [...prev, {
+        id: newId,
+        name: file.name,
+        content: event.target.result,
+        isBinary: true,
+      }]);
+      setActiveFileId(newId);
+      showToast(`Uploaded image: ${file.name}`);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleImportFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const content = event.target.result;
+      if (projectMode) {
+        if (projectFiles.some(f => f.name.toLowerCase() === file.name.toLowerCase())) {
+          showToast("File already exists!");
+          return;
+        }
+        const newId = Date.now().toString();
+        setProjectFiles(prev => [...prev, {
+          id: newId,
+          name: file.name,
+          content: content,
+          isBinary: false,
+        }]);
+        setActiveFileId(newId);
+        showToast(`Imported project file: ${file.name}`);
+      } else {
+        setCode(content);
+        codeRef.current = content;
+        showToast(`Loaded: ${file.name}`);
+      }
+    };
+    reader.readAsText(file);
   };
 
   // ---------- Mode switch ----------
@@ -837,272 +1223,165 @@ export default function LaTeXApp() {
     gap: 6,
   });
 
-  // ---------- Render ----------
   return (
     <div
       ref={mainContainerRef}
       style={{
         height: "100vh",
         minHeight: "100vh",
-        background: "#08080e",
-        color: "#e2e2e8",
-        fontFamily: "'JetBrains Mono', 'Fira Code', 'Source Code Pro', monospace",
+        background: "var(--bg-dark)",
+        color: "#f1f1f6",
+        fontFamily: "'Outfit', system-ui, -apple-system, sans-serif",
         display: "flex",
         flexDirection: "column",
         position: "relative",
         overflow: "hidden",
       }}
     >
-      {/* ========== FIXED GLASS HEADER ========== */}
+      {/* ========== REDESIGNED PREMIUM TOP NAVBAR ========== */}
       <header
+        className="glass-card"
         style={{
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          padding: "10px 20px",
-          background: "rgba(10,10,18,0.65)",
-          backdropFilter: "blur(24px) saturate(1.4)",
-          WebkitBackdropFilter: "blur(24px) saturate(1.4)",
-          borderBottom: "1px solid rgba(255,255,255,0.04)",
+          padding: "10px 24px",
+          borderRadius: 0,
+          borderTop: "none",
+          borderLeft: "none",
+          borderRight: "none",
+          background: "rgba(10, 10, 18, 0.45)",
           position: "sticky",
           top: 0,
           zIndex: 50,
           flexShrink: 0,
-          boxShadow: "0 4px 30px rgba(0,0,0,0.3)",
+          boxShadow: "0 4px 20px rgba(0, 0, 0, 0.15)",
         }}
       >
-        {/* Logo */}
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        {/* Branding */}
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
           <div
             style={{
-              width: 34,
-              height: 34,
+              width: 38,
+              height: 38,
               borderRadius: 10,
-              background: "linear-gradient(135deg, #7c3aed, #a855f7)",
+              background: "var(--primary-solid)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              fontSize: 15,
+              fontSize: 16,
               fontWeight: 800,
               color: "#fff",
-              letterSpacing: -1,
-              boxShadow: "0 0 20px rgba(124,58,237,0.3)",
             }}
           >
             Lx
           </div>
           <div>
-            <h1 style={{ fontSize: 15, fontWeight: 700, margin: 0, color: "#f0f0f5", letterSpacing: -0.3 }}>
+            <h1 style={{ fontSize: 16, fontWeight: 700, margin: 0, color: "#fff", letterSpacing: -0.3, fontFamily: "'Outfit', sans-serif" }}>
               LaTeX Studio
             </h1>
-            <span style={{ fontSize: 10, color: "#5a5a70", fontWeight: 400 }}>
-              Local • Offline • Full-featured
+            <span style={{ fontSize: 10, color: "var(--primary-solid)", fontWeight: 600, letterSpacing: 0.5, textTransform: "uppercase" }}>
+              Enterprise Workspace
             </span>
           </div>
         </div>
 
-        {/* Controls cluster */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          {/* Mode Toggle (glass pill) */}
-          <div style={{
-            display: "flex",
-            background: "rgba(255,255,255,0.03)",
-            backdropFilter: "blur(12px)",
-            WebkitBackdropFilter: "blur(12px)",
-            borderRadius: 10,
-            padding: 3,
-            border: "1px solid rgba(255,255,255,0.05)",
-          }}>
-            <button
-              onClick={() => handleModeChange('latex')}
-              style={{
-                padding: "5px 14px",
-                borderRadius: 8,
-                border: "none",
-                background: mode === 'latex' ? "rgba(124,58,237,0.2)" : "transparent",
-                color: mode === 'latex' ? "#c084fc" : "#6b6b80",
-                fontSize: 11,
-                fontWeight: mode === 'latex' ? 600 : 400,
-                cursor: "pointer",
-                transition: "all 0.2s",
-                fontFamily: "inherit",
-              }}
-            >
-              📄 LaTeX
-            </button>
-            <button
-              onClick={() => handleModeChange('html')}
-              style={{
-                padding: "5px 14px",
-                borderRadius: 8,
-                border: "none",
-                background: mode === 'html' ? "rgba(52,211,153,0.15)" : "transparent",
-                color: mode === 'html' ? "#34d399" : "#6b6b80",
-                fontSize: 11,
-                fontWeight: mode === 'html' ? 600 : 400,
-                cursor: "pointer",
-                transition: "all 0.2s",
-                fontFamily: "inherit",
-              }}
-            >
-              🌐 HTML
-            </button>
-          </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, background: "rgba(255, 255, 255, 0.02)", border: "1px solid rgba(255, 255, 255, 0.04)", padding: "5px 12px", borderRadius: 20 }}>
+          <span className="status-pulse-dot" style={{ width: 7, height: 7, borderRadius: "50%", background: "#10b981" }} />
+          <span style={{ fontSize: 11, color: "#94a3b8", fontWeight: 500 }}>Render Node Online</span>
+        </div>
 
-          {/* Engine dropdown – only for LaTeX mode */}
-          {mode === 'latex' && (
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <div
+        {/* Global actions */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {/* Clear editor */}
+          <button
+            onClick={() => setShowClearConfirm(true)}
+            className="glass-btn"
+            style={{
+              padding: "7px 14px",
+              borderRadius: 8,
+              fontSize: 12,
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              fontWeight: 500,
+            }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+            </svg>
+            Clear Editor
+          </button>
+
+          {/* Import File */}
+          <label
+            className="glass-btn"
+            style={{
+              padding: "7px 14px",
+              borderRadius: 8,
+              fontSize: 12,
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              fontWeight: 500,
+              cursor: "pointer",
+            }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            Import File
+            <input
+              type="file"
+              accept=".tex,.bib,.cls,.sty,.html,.css,.js,.txt"
+              onChange={handleImportFile}
+              style={{ display: "none" }}
+            />
+          </label>
+
+          {/* Action links */}
+          {pdfUrl && (
+            <>
+              <a
+                href={`${API_BASE_URL}/pdf`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="glass-btn"
                 style={{
-                  width: 7,
-                  height: 7,
-                  borderRadius: "50%",
-                  background:
-                    compileEngine === "pdflatex" ? "#60a5fa"
-                    : compileEngine === "xelatex" ? "#34d399"
-                    : "#f59e0b",
-                  boxShadow: `0 0 8px ${
-                    compileEngine === "pdflatex" ? "rgba(96,165,250,0.4)"
-                    : compileEngine === "xelatex" ? "rgba(52,211,153,0.4)"
-                    : "rgba(245,158,11,0.4)"
-                  }`,
-                }}
-              />
-              <select
-                value={compileEngine}
-                onChange={(e) => {
-                  setCompileEngine(e.target.value);
-                  engineRef.current = e.target.value;
-                }}
-                style={{
-                  background: "rgba(255,255,255,0.04)",
-                  backdropFilter: "blur(8px)",
-                  WebkitBackdropFilter: "blur(8px)",
-                  border: "1px solid rgba(255,255,255,0.06)",
-                  color: "#a0a0b0",
-                  padding: "5px 10px",
+                  textDecoration: "none",
+                  padding: "7px 14px",
                   borderRadius: 8,
-                  fontSize: 11,
-                  cursor: "pointer",
-                  outline: "none",
-                  fontFamily: "inherit",
+                  fontSize: 12,
+                  color: "var(--primary-solid)",
+                  fontWeight: 600,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
                 }}
               >
-                <option value="pdflatex">pdfLaTeX</option>
-                <option value="xelatex">XeLaTeX (Unicode/Bengali)</option>
-                <option value="lualatex">LuaLaTeX (Unicode)</option>
-              </select>
-            </div>
-          )}
-
-          {/* Templates dropdown */}
-          <div style={{ position: "relative" }}>
-            <Tooltip text="Choose a template">
-              <button
-                onClick={(e) => { e.stopPropagation(); setShowTemplateMenu(!showTemplateMenu); }}
-                style={glassBtn()}
-              >
-                <span>Templates</span>
-                <span style={{ fontSize: 9, opacity: 0.5 }}>▼</span>
-              </button>
-            </Tooltip>
-            {showTemplateMenu && (
-              <div
-                onClick={(e) => e.stopPropagation()}
+                <span>↗ Open</span>
+              </a>
+              <a
+                href={`${API_BASE_URL}/download`}
+                download="document.pdf"
                 style={{
-                  position: "absolute",
-                  top: "calc(100% + 8px)",
-                  right: 0,
-                  background: "rgba(18,18,28,0.85)",
-                  backdropFilter: "blur(24px) saturate(1.3)",
-                  WebkitBackdropFilter: "blur(24px) saturate(1.3)",
-                  border: "1px solid rgba(255,255,255,0.06)",
-                  borderRadius: 12,
-                  overflow: "hidden",
-                  zIndex: 100,
-                  minWidth: 220,
-                  boxShadow: "0 16px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.02) inset",
+                  background: "rgba(16, 185, 129, 0.12)",
+                  border: "1px solid rgba(16, 185, 129, 0.25)",
+                  color: "#10b981",
+                  padding: "7px 14px",
+                  borderRadius: 8,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  textDecoration: "none",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
                 }}
               >
-                <div style={{ padding: "8px 14px 4px", fontSize: 10, color: "#5a5a70", textTransform: "uppercase", letterSpacing: 1 }}>
-                  {mode === 'latex' ? 'LaTeX Templates' : 'HTML Templates'}
-                </div>
-                {mode === 'latex' ? (
-                  Object.keys(LATEX_TEMPLATES).map((key) => (
-                    <button
-                      key={key}
-                      onClick={() => loadTemplate(key)}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 10,
-                        width: "100%",
-                        padding: "9px 14px",
-                        border: "none",
-                        background: selectedTemplate === key ? "rgba(124,58,237,0.12)" : "transparent",
-                        color: selectedTemplate === key ? "#c084fc" : "#a0a0b0",
-                        fontSize: 12,
-                        cursor: "pointer",
-                        textAlign: "left",
-                        fontFamily: "inherit",
-                        transition: "all 0.15s",
-                      }}
-                    >
-                      <span style={{ fontSize: 15, width: 22, textAlign: "center" }}>
-                        {latexTemplateIcons[key]}
-                      </span>
-                      {latexTemplateLabels[key]}
-                      {key === "bengali" && (
-                        <span style={{ fontSize: 9, color: "#34d399", marginLeft: "auto", opacity: 0.8 }}>
-                          XeLaTeX
-                        </span>
-                      )}
-                    </button>
-                  ))
-                ) : (
-                  Object.keys(HTML_TEMPLATES).map((key) => (
-                    <button
-                      key={key}
-                      onClick={() => loadTemplate(key)}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 10,
-                        width: "100%",
-                        padding: "9px 14px",
-                        border: "none",
-                        background: selectedTemplate === key ? "rgba(52,211,153,0.1)" : "transparent",
-                        color: selectedTemplate === key ? "#34d399" : "#a0a0b0",
-                        fontSize: 12,
-                        cursor: "pointer",
-                        textAlign: "left",
-                        fontFamily: "inherit",
-                        transition: "all 0.15s",
-                      }}
-                    >
-                      <span style={{ fontSize: 15, width: 22, textAlign: "center" }}>
-                        {htmlTemplateIcons[key]}
-                      </span>
-                      {htmlTemplateLabels[key]}
-                    </button>
-                  ))
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* Clear button */}
-          <Tooltip text="Clear editor (Ctrl+Shift+X)">
-            <button
-              onClick={() => setShowClearConfirm(true)}
-              style={glassBtn()}
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
-              </svg>
-              Clear
-            </button>
-          </Tooltip>
+                <span>⬇ Download</span>
+              </a>
+            </>
+          )}
 
           {/* Compile button */}
           <button
@@ -1110,45 +1389,41 @@ export default function LaTeXApp() {
             disabled={compiling}
             style={{
               background: compiling
-                ? "rgba(60,60,80,0.4)"
-                : "linear-gradient(135deg, #7c3aed, #9333ea)",
-              border: compiling ? "1px solid rgba(255,255,255,0.05)" : "none",
+                ? "rgba(40, 40, 55, 0.4)"
+                : "var(--primary-solid)",
+              border: "none",
               color: "#fff",
-              padding: "7px 18px",
-              borderRadius: 10,
+              padding: "8px 20px",
+              borderRadius: 8,
               fontSize: 12,
               fontWeight: 600,
               cursor: compiling ? "wait" : "pointer",
               display: "flex",
               alignItems: "center",
               gap: 8,
-              fontFamily: "inherit",
-              boxShadow: compiling
-                ? "none"
-                : "0 2px 16px rgba(124,58,237,0.35), 0 0 0 1px rgba(124,58,237,0.2) inset",
-              transition: "all 0.25s ease",
+              transition: "all 0.15s ease",
             }}
           >
             {compiling ? (
               <>
                 <span
                   style={{
-                    width: 13,
-                    height: 13,
-                    border: "2px solid #fff3",
+                    width: 12,
+                    height: 12,
+                    border: "2px solid rgba(255,255,255,0.2)",
                     borderTopColor: "#fff",
                     borderRadius: "50%",
                     animation: "spin 0.7s linear infinite",
                     display: "inline-block",
                   }}
                 />
-                Compiling…
+                Compiling...
               </>
             ) : (
-              <>
-                ▶ Compile{" "}
-                <span style={{ fontSize: 9, opacity: 0.5 }}>Ctrl+↵</span>
-              </>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span>▶ Compile</span>
+                <span style={{ fontSize: 9, opacity: 0.9, background: "rgba(255,255,255,0.15)", color: "#fff", padding: "2px 6px", borderRadius: 4, fontWeight: 500 }}>Ctrl+Enter</span>
+              </div>
             )}
           </button>
         </div>
@@ -1159,38 +1434,35 @@ export default function LaTeXApp() {
         <div style={{
           position: "fixed",
           inset: 0,
-          background: "rgba(0,0,0,0.6)",
-          backdropFilter: "blur(8px)",
-          WebkitBackdropFilter: "blur(8px)",
+          background: "rgba(0,0,0,0.7)",
+          backdropFilter: "blur(12px)",
+          WebkitBackdropFilter: "blur(12px)",
           zIndex: 200,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
         }}>
-          <div style={{
-            background: "rgba(16,16,26,0.9)",
-            backdropFilter: "blur(24px)",
-            WebkitBackdropFilter: "blur(24px)",
-            border: "1px solid rgba(255,255,255,0.08)",
-            borderRadius: 16,
-            padding: "28px 32px",
+          <div className="glass-card" style={{
+            padding: "32px",
             maxWidth: 380,
             textAlign: "center",
-            boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
           }}>
-            <div style={{ fontSize: 32, marginBottom: 12 }}>🗑️</div>
-            <h3 style={{ margin: "0 0 8px", fontSize: 16, fontWeight: 600, color: "#f0f0f5" }}>
+            <div style={{ fontSize: 36, marginBottom: 12 }}>🗑️</div>
+            <h3 style={{ margin: "0 0 8px", fontSize: 18, fontWeight: 700, color: "#fff" }}>
               Clear Editor?
             </h3>
-            <p style={{ margin: "0 0 20px", fontSize: 13, color: "#7a7a90", lineHeight: 1.5 }}>
+            <p style={{ margin: "0 0 24px", fontSize: 13, color: "#94a3b8", lineHeight: 1.6 }}>
               This will remove all content from the editor. This action cannot be undone.
             </p>
-            <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
+            <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
               <button
                 onClick={() => setShowClearConfirm(false)}
+                className="glass-btn"
                 style={{
-                  ...glassBtn(),
-                  padding: "8px 20px",
+                  padding: "8px 24px",
+                  borderRadius: 10,
+                  fontWeight: 600,
+                  fontSize: 13,
                 }}
               >
                 Cancel
@@ -1198,14 +1470,13 @@ export default function LaTeXApp() {
               <button
                 onClick={clearEditor}
                 style={{
-                  background: "rgba(239,68,68,0.15)",
-                  border: "1px solid rgba(239,68,68,0.25)",
-                  color: "#f87171",
-                  padding: "8px 20px",
-                  borderRadius: 8,
-                  fontSize: 12,
+                  background: "rgba(239, 68, 68, 0.15)",
+                  border: "1px solid rgba(239, 68, 68, 0.3)",
+                  color: "#ef4444",
+                  padding: "8px 24px",
+                  borderRadius: 10,
+                  fontSize: 13,
                   cursor: "pointer",
-                  fontFamily: "inherit",
                   fontWeight: 600,
                   transition: "all 0.2s",
                 }}
@@ -1219,145 +1490,141 @@ export default function LaTeXApp() {
 
       {/* ========== TOAST NOTIFICATION ========== */}
       {toastMessage && (
-        <div style={{
+        <div className="glass-card" style={{
           position: "fixed",
           bottom: 24,
           left: "50%",
           transform: "translateX(-50%)",
-          background: "rgba(16,16,28,0.85)",
-          backdropFilter: "blur(20px)",
-          WebkitBackdropFilter: "blur(20px)",
-          border: "1px solid rgba(124,58,237,0.2)",
-          color: "#c084fc",
-          padding: "10px 24px",
-          borderRadius: 12,
-          fontSize: 12,
-          fontWeight: 500,
+          border: "1px solid rgba(139, 92, 246, 0.3)",
+          color: "#d946ef",
+          padding: "12px 28px",
+          borderRadius: 16,
+          fontSize: 13,
+          fontWeight: 600,
           zIndex: 300,
-          boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
-          animation: "toastIn 0.3s ease-out",
+          boxShadow: "0 8px 32px rgba(139, 92, 246, 0.15)",
+          animation: "toastIn 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards",
         }}>
           {toastMessage}
         </div>
       )}
 
-      {/* Suggestions banner – only for LaTeX mode */}
+      {/* Suggestions banner */}
       {mode === 'latex' && suggestions && suggestions.length > 0 && (
         <div
+          className="glass-card"
           style={{
-            background: "rgba(26,21,32,0.7)",
-            backdropFilter: "blur(12px)",
-            WebkitBackdropFilter: "blur(12px)",
-            borderBottom: "1px solid rgba(245,158,11,0.1)",
-            padding: "12px 20px",
+            margin: "12px 24px 0",
+            padding: "16px 20px",
             display: "flex",
             flexDirection: "column",
-            gap: 8,
+            gap: 10,
+            border: "1px solid rgba(245, 158, 11, 0.2)",
+            boxShadow: "0 8px 32px rgba(245, 158, 11, 0.05)",
           }}
         >
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{
-                background: "rgba(245,158,11,0.12)",
+                background: "rgba(245, 158, 11, 0.12)",
                 color: "#f59e0b",
-                padding: "2px 8px",
-                borderRadius: 6,
+                padding: "3px 10px",
+                borderRadius: 20,
                 fontSize: 10,
-                fontWeight: 600,
+                fontWeight: 700,
+                letterSpacing: 0.5,
               }}>
                 ⚠ ISSUES DETECTED
               </span>
-              <span style={{ fontSize: 11, color: "#7a7a90" }}>
-                {suggestions.length} issue{suggestions.length > 1 ? "s" : ""}
+              <span style={{ fontSize: 12, color: "#94a3b8", fontWeight: 500 }}>
+                {suggestions.length} compilation issues parsed
               </span>
             </div>
-            <div style={{ display: "flex", gap: 6 }}>
+            <div style={{ display: "flex", gap: 8 }}>
               <button
                 onClick={applyAllFixes}
                 style={{
-                  background: "rgba(34,197,94,0.1)",
-                  border: "1px solid rgba(34,197,94,0.2)",
-                  color: "#22c55e",
-                  padding: "4px 12px",
-                  borderRadius: 6,
-                  fontSize: 11,
+                  background: "rgba(16, 185, 129, 0.15)",
+                  border: "1px solid rgba(16, 185, 129, 0.3)",
+                  color: "#10b981",
+                  padding: "5px 14px",
+                  borderRadius: 8,
+                  fontSize: 12,
                   cursor: "pointer",
-                  fontFamily: "inherit",
                   fontWeight: 600,
-                  transition: "all 0.2s",
                 }}
               >
-                ✓ Fix All & Continue
+                ✓ Fix All Issues
               </button>
               <button
                 onClick={() => { setSuggestions(null); doCompile(); }}
+                className="glass-btn"
                 style={{
-                  ...glassBtn(),
-                  padding: "4px 12px",
-                  fontSize: 11,
+                  padding: "5px 14px",
+                  borderRadius: 8,
+                  fontSize: 12,
+                  fontWeight: 500,
                 }}
               >
-                Compile Anyway
+                Ignore & Compile
               </button>
               <button
                 onClick={() => setSuggestions(null)}
                 style={{
                   background: "transparent",
                   border: "none",
-                  color: "#5a5a70",
+                  color: "#475569",
                   padding: "4px 8px",
                   cursor: "pointer",
-                  fontSize: 14,
+                  fontSize: 16,
                 }}
               >
                 ✕
               </button>
             </div>
           </div>
-          {suggestions.map((s, i) => (
-            <div
-              key={i}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                background: "rgba(10,10,18,0.5)",
-                border: "1px solid " + (s.type === "engine" ? "rgba(239,68,68,0.15)" : "rgba(255,255,255,0.04)"),
-                borderRadius: 10,
-                padding: "8px 14px",
-                backdropFilter: "blur(8px)",
-                WebkitBackdropFilter: "blur(8px)",
-              }}
-            >
-              <div style={{ flex: 1 }}>
-                <span style={{ color: s.type === "engine" ? "#ef4444" : "#f59e0b", marginRight: 8, fontSize: 12 }}>●</span>
-                <span style={{ fontSize: 12, color: "#c0c0d0" }}>{s.message}</span>
-              </div>
-              <button
-                onClick={() => applyFix(s)}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 150, overflowY: "auto" }}>
+            {suggestions.map((s, i) => (
+              <div
+                key={i}
                 style={{
-                  background: s.type === "engine" ? "rgba(239,68,68,0.1)" : "rgba(124,58,237,0.1)",
-                  border: "1px solid " + (s.type === "engine" ? "rgba(239,68,68,0.2)" : "rgba(124,58,237,0.2)"),
-                  color: s.type === "engine" ? "#f87171" : "#c084fc",
-                  padding: "3px 10px",
-                  borderRadius: 6,
-                  fontSize: 10,
-                  cursor: "pointer",
-                  fontFamily: "inherit",
-                  whiteSpace: "nowrap",
-                  marginLeft: 10,
-                  transition: "all 0.2s",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  background: "rgba(10,10,18,0.25)",
+                  border: "1px solid rgba(255,255,255,0.02)",
+                  borderRadius: 8,
+                  padding: "8px 14px",
                 }}
               >
-                {s.fix}
-              </button>
-            </div>
-          ))}
+                <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ color: s.type === "engine" ? "#ef4444" : "#f59e0b", fontSize: 14 }}>●</span>
+                  <span style={{ fontSize: 12, color: "#cbd5e1" }}>{s.message}</span>
+                </div>
+                <button
+                  onClick={() => applyFix(s)}
+                  style={{
+                    background: s.type === "engine" ? "rgba(239, 68, 68, 0.12)" : "rgba(139, 92, 246, 0.12)",
+                    border: "1px solid " + (s.type === "engine" ? "rgba(239, 68, 68, 0.25)" : "rgba(139, 92, 246, 0.25)"),
+                    color: s.type === "engine" ? "#f87171" : "#c084fc",
+                    padding: "4px 12px",
+                    borderRadius: 6,
+                    fontSize: 11,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  {s.fix}
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
-      {/* Tab bar (glass) */}
+      {/* Tab bar (glass) - Mobile only */}
       <div
+        className="studio-tabbar"
         style={{
           display: "flex",
           background: "rgba(13,13,21,0.6)",
@@ -1373,13 +1640,13 @@ export default function LaTeXApp() {
             onClick={() => setActiveTab(tab)}
             style={{
               flex: 1,
-              padding: "9px",
+              padding: "12px",
               background: "transparent",
               border: "none",
               borderBottom: activeTab === tab
-                ? "2px solid #7c3aed"
+                ? "2px solid var(--primary-solid)"
                 : "2px solid transparent",
-              color: activeTab === tab ? "#c084fc" : "#5a5a70",
+              color: activeTab === tab ? "#cbd5e1" : "#475569",
               fontFamily: "inherit",
               fontSize: 12,
               fontWeight: activeTab === tab ? 600 : 400,
@@ -1393,343 +1660,553 @@ export default function LaTeXApp() {
         ))}
       </div>
 
-      {/* Main content */}
+      {/* Main content body containing left sidebar and workspace */}
       <div style={{ display: "flex", flex: 1, overflow: "hidden", minHeight: 0, width: "100%" }}>
-        {/* Editor */}
-        <div
+        
+        {/* ========== SLICK LEFT SIDEBAR PANEL ========== */}
+        <aside
+          className="glass-card"
           style={{
-            width: "100%",
-            flex: "1 1 100%",
-            display: activeTab === "editor" ? "flex" : "none",
+            width: 280,
+            flexShrink: 0,
+            borderRadius: 0,
+            borderTop: "none",
+            borderLeft: "none",
+            borderBottom: "none",
+            borderRight: "1px solid rgba(255, 255, 255, 0.04)",
+            background: "rgba(10, 10, 18, 0.2)",
+            display: "flex",
             flexDirection: "column",
-            position: "relative",
+            gap: 20,
+            padding: "24px 18px",
+            overflowY: "auto",
           }}
         >
-          <div style={{ flex: 1, display: "flex", overflow: "hidden", position: "relative" }}>
-            {/* Line numbers */}
-            <div
-              ref={lineRef}
-              style={{
-                width: 48,
-                background: "rgba(10,10,18,0.8)",
-                borderRight: "1px solid rgba(255,255,255,0.03)",
-                padding: "16px 0",
-                overflowY: "hidden",
-                flexShrink: 0,
-                userSelect: "none",
-              }}
-            >
-              {Array.from({ length: lineCount }, (_, i) => (
-                <div
-                  key={i}
-                  style={{
-                    height: 20,
-                    lineHeight: "20px",
-                    fontSize: 11,
-                    textAlign: "right",
-                    paddingRight: 10,
-                    color: "#2e2e42",
-                  }}
-                >
-                  {i + 1}
-                </div>
-              ))}
+          {/* Project Mode Toggle */}
+          <div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+              <label style={{ fontSize: 10, color: "var(--primary-solid)", fontWeight: 700, textTransform: "uppercase", letterSpacing: 1 }}>
+                Project Mode
+              </label>
+              <span style={{ fontSize: 9, color: projectMode ? "#10b981" : "#52525b", fontWeight: 700 }}>
+                {projectMode ? "PROJECT" : "BASIC"}
+              </span>
             </div>
-
-            {/* Syntax highlighting overlay */}
-            <pre
-              ref={highlightRef}
-              aria-hidden="true"
-              style={{
-                position: "absolute",
-                top: 0,
-                left: 48,
-                right: 0,
-                bottom: 0,
-                margin: 0,
-                padding: 16,
-                fontSize: 13,
-                lineHeight: "20px",
-                fontFamily: "inherit",
-                overflow: "auto",
-                pointerEvents: "none",
-                whiteSpace: "pre",
-                wordWrap: "normal",
-                color: "#e2e2e8",
-              }}
-              dangerouslySetInnerHTML={{
-                __html: highlightCode(code, mode) + "\n",
-              }}
-            />
-
-            {/* Actual editable textarea */}
-            <textarea
-              ref={textareaRef}
-              value={code}
-              onChange={(e) => {
-                setCode(e.target.value);
-                codeRef.current = e.target.value;
-              }}
-              onScroll={syncScroll}
-              onKeyDown={handleKeyDown}
-              spellCheck={false}
-              style={{
-                flex: 1,
-                padding: 16,
-                fontSize: 13,
-                lineHeight: "20px",
-                fontFamily: "inherit",
-                background: "transparent",
-                color: "transparent",
-                caretColor: mode === 'latex' ? "#c084fc" : "#34d399",
-                border: "none",
-                outline: "none",
-                resize: "none",
-                overflow: "auto",
-                whiteSpace: "pre",
-                wordWrap: "normal",
-                position: "relative",
-                zIndex: 1,
-              }}
-            />
-          </div>
-
-          {/* Editor footer (glass) */}
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              padding: "5px 16px",
-              borderTop: "1px solid rgba(255,255,255,0.03)",
-              background: "rgba(10,10,18,0.7)",
-              backdropFilter: "blur(8px)",
-              WebkitBackdropFilter: "blur(8px)",
-              fontSize: 10,
-              color: "#3e3e55",
-              flexShrink: 0,
-            }}
-          >
-            <span>
-              {lineCount} lines • {code.length} chars • {mode === 'latex' ? 'LaTeX' : 'HTML'}
-            </span>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              {mode === 'latex' && detectRequiresUnicodeEngine(code) && compileEngine === "pdflatex" && (
-                <span style={{ color: "#f59e0b", fontSize: 9 }}>⚠ Needs XeLaTeX/LuaLaTeX</span>
-              )}
-              {mode === 'latex' && (
-                <span
-                  style={{
-                    color:
-                      compileEngine === "pdflatex" ? "#60a5fa"
-                      : compileEngine === "xelatex" ? "#34d399"
-                      : "#f59e0b",
-                    fontSize: 10,
-                  }}
-                >
-                  {compileEngine}
-                </span>
-              )}
-            </div>
-          </div>
-
-          {/* ========== SCROLL TO TOP BUTTON ========== */}
-          {showScrollTop && (
-            <button
-              onClick={scrollToTop}
-              style={{
-                position: "absolute",
-                bottom: 48,
-                right: 20,
-                width: 38,
-                height: 38,
-                borderRadius: 12,
-                background: "rgba(124,58,237,0.15)",
-                backdropFilter: "blur(16px)",
-                WebkitBackdropFilter: "blur(16px)",
-                border: "1px solid rgba(124,58,237,0.25)",
-                color: "#c084fc",
-                fontSize: 16,
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                zIndex: 10,
-                boxShadow: "0 4px 20px rgba(124,58,237,0.2)",
-                transition: "all 0.25s ease",
-                animation: "fadeInUp 0.3s ease-out",
-              }}
-              title="Scroll to top"
-            >
-              ↑
-            </button>
-          )}
-        </div>
-
-        {/* Preview pane */}
-        <div
-          style={{
-            width: "100%",
-            flex: "1 1 100%",
-            display: activeTab === "preview" ? "flex" : "none",
-            flexDirection: "column",
-            background: "#0a0a12",
-          }}
-        >
-          {error && (
-            <div
-              style={{
-                background: "rgba(26,15,15,0.8)",
-                backdropFilter: "blur(8px)",
-                WebkitBackdropFilter: "blur(8px)",
-                borderBottom: "1px solid rgba(239,68,68,0.1)",
-                padding: 14,
-                maxHeight: 300,
-                overflow: "auto",
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                <span style={{
-                  background: "rgba(239,68,68,0.1)",
-                  color: "#ef4444",
-                  padding: "2px 8px",
-                  borderRadius: 6,
-                  fontSize: 10,
-                  fontWeight: 600,
-                }}>
-                  ✕ COMPILATION ERROR
-                </span>
-                {compiledWith && (
-                  <span style={{ fontSize: 10, color: "#5a5a70" }}>engine: {compiledWith}</span>
-                )}
-              </div>
-              <pre style={{
-                fontSize: 11,
-                color: "#f87171",
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-word",
-                margin: 0,
-                fontFamily: "inherit",
-                lineHeight: 1.6,
-              }}>
-                {error}
-              </pre>
-            </div>
-          )}
-
-          {pdfUrl ? (
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "7px 14px",
-                  borderBottom: "1px solid rgba(255,255,255,0.03)",
-                  background: "rgba(10,10,18,0.7)",
-                  backdropFilter: "blur(8px)",
-                  WebkitBackdropFilter: "blur(8px)",
+            <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", background: "rgba(255, 255, 255, 0.02)", border: "1px solid rgba(255, 255, 255, 0.04)", padding: "10px 14px", borderRadius: 10, transition: "all 0.2s" }}>
+              <input
+                type="checkbox"
+                checked={projectMode}
+                onChange={(e) => {
+                  setProjectMode(e.target.checked);
+                  showToast(e.target.checked ? "Project Mode Enabled" : "Basic Mode Enabled");
                 }}
-              >
-                <span style={{ fontSize: 11, color: "#22c55e", display: "flex", alignItems: "center", gap: 6 }}>
-                  <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#22c55e", boxShadow: "0 0 8px rgba(34,197,94,0.4)" }} />
-                  Compiled with {compiledWith}
+                style={{
+                  cursor: "pointer",
+                  accentColor: "var(--primary-solid)",
+                  width: 14,
+                  height: 14,
+                }}
+              />
+              <span style={{ fontSize: 12, color: "#cbd5e1", fontWeight: 500 }}>Enable Multi-File</span>
+            </label>
+          </div>
+
+          {/* File Explorer (Project Mode Only) */}
+          {projectMode && (
+            <div className="glass-card" style={{ padding: 12, background: "rgba(255,255,255,0.01)" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                <span style={{ fontSize: 10, color: "var(--primary-solid)", fontWeight: 700, textTransform: "uppercase", letterSpacing: 1 }}>
+                  Project Files
                 </span>
-                <div style={{ display: "flex", gap: 6 }}>
-                  <a
-                    href={`${API_BASE_URL}/pdf`}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                <div style={{ display: "flex", gap: 4 }}>
+                  <button
+                    onClick={() => {
+                      const name = prompt("Enter file name (e.g., sections/intro.tex, references.bib):");
+                      if (name) {
+                        if (projectFiles.some(f => f.name.toLowerCase() === name.toLowerCase())) {
+                          showToast("File already exists!");
+                          return;
+                        }
+                        const newId = Date.now().toString();
+                        setProjectFiles(prev => [...prev, { id: newId, name, content: `% ${name}\n` }]);
+                        setActiveFileId(newId);
+                        showToast(`Created file: ${name}`);
+                      }
+                    }}
+                    className="glass-btn"
                     style={{
-                      ...glassBtn(),
-                      textDecoration: "none",
-                      padding: "4px 12px",
-                      fontSize: 11,
-                      color: "#c084fc",
+                      padding: "3px 6px",
+                      borderRadius: 4,
+                      fontSize: 9,
+                      fontWeight: 600,
                     }}
                   >
-                    ↗ Open
-                  </a>
-                  <a
-                    href={`${API_BASE_URL}/download`}
-                    download="document.pdf"
+                    + File
+                  </button>
+                  <label
+                    className="glass-btn"
                     style={{
-                      background: "rgba(34,197,94,0.1)",
-                      border: "1px solid rgba(34,197,94,0.2)",
-                      color: "#22c55e",
-                      padding: "4px 12px",
-                      borderRadius: 8,
-                      fontSize: 11,
+                      padding: "3px 6px",
+                      borderRadius: 4,
+                      fontSize: 9,
                       fontWeight: 600,
-                      textDecoration: "none",
+                      cursor: "pointer",
+                      display: "inline-block",
+                    }}
+                  >
+                    + Image
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleImageUpload}
+                      style={{ display: "none" }}
+                    />
+                  </label>
+                </div>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 180, overflowY: "auto" }}>
+                {projectFiles.map((file) => (
+                  <div
+                    key={file.id}
+                    style={{
                       display: "flex",
                       alignItems: "center",
-                      gap: 4,
-                      transition: "all 0.2s",
+                      justifyContent: "space-between",
+                      background: activeFileId === file.id ? "rgba(59, 130, 246, 0.08)" : "transparent",
+                      borderRadius: 6,
+                      padding: "4px 8px",
+                      border: "1px solid " + (activeFileId === file.id ? "rgba(59, 130, 246, 0.25)" : "transparent"),
                     }}
                   >
-                    ⬇ Download
-                  </a>
-                </div>
-              </div>
-              <div style={{ flex: 1, minHeight: 0 }}>
-                <CustomPDFViewer url={pdfUrl} />
+                    <button
+                      onClick={() => {
+                        setActiveFileId(file.id);
+                        if (editorRef.current && monacoRef.current) {
+                          const model = editorRef.current.getModel();
+                          monacoRef.current.editor.setModelMarkers(model, "latex-diagnostics", []);
+                        }
+                      }}
+                      style={{
+                        background: "transparent",
+                        border: "none",
+                        color: activeFileId === file.id ? "var(--primary-solid)" : "#94a3b8",
+                        fontSize: 12,
+                        fontWeight: activeFileId === file.id ? 600 : 400,
+                        cursor: "pointer",
+                        textAlign: "left",
+                        flex: 1,
+                        textOverflow: "ellipsis",
+                        overflow: "hidden",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {file.name === "main.tex" ? "👑 " : file.isBinary ? "🖼️ " : "📄 "}
+                      {file.name}
+                    </button>
+                    {file.name !== "main.tex" && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (confirm(`Delete file "${file.name}"?`)) {
+                            setProjectFiles(prev => prev.filter(f => f.id !== file.id));
+                            if (activeFileId === file.id) {
+                              setActiveFileId("1"); // revert to main
+                            }
+                            showToast(`Deleted file: ${file.name}`);
+                          }
+                        }}
+                        style={{
+                          background: "transparent",
+                          border: "none",
+                          color: "#71717a",
+                          cursor: "pointer",
+                          fontSize: 11,
+                          padding: "2px 4px",
+                        }}
+                        title="Delete file"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                ))}
               </div>
             </div>
-          ) : (
-            !error && (
-              <div
+          )}
+
+          {/* Workspace mode (LaTeX vs HTML) */}
+          <div>
+            <label style={{ fontSize: 10, color: "var(--primary-solid)", fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, display: "block", marginBottom: 8 }}>
+              Workspace Mode
+            </label>
+            <div style={{ display: "flex", background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.04)", borderRadius: 10, padding: 3 }}>
+              <button
+                onClick={() => handleModeChange('latex')}
                 style={{
                   flex: 1,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  flexDirection: "column",
-                  gap: 14,
-                  color: "#2e2e42",
+                  padding: "6px 0",
+                  borderRadius: 8,
+                  border: "none",
+                  background: mode === 'latex' ? "rgba(59, 130, 246, 0.12)" : "transparent",
+                  color: mode === 'latex' ? "var(--primary-solid)" : "#64748b",
+                  fontSize: 11,
+                  fontWeight: mode === 'latex' ? 600 : 500,
+                  cursor: "pointer",
+                  transition: "all 0.2s",
                 }}
               >
-                <div style={{
-                  fontSize: 48,
-                  opacity: 0.2,
-                  filter: "grayscale(0.5)",
+                📄 LaTeX
+              </button>
+              <button
+                onClick={() => handleModeChange('html')}
+                style={{
+                  flex: 1,
+                  padding: "6px 0",
+                  borderRadius: 8,
+                  border: "none",
+                  background: mode === 'html' ? "rgba(59, 130, 246, 0.12)" : "transparent",
+                  color: mode === 'html' ? "var(--primary-solid)" : "#64748b",
+                  fontSize: 11,
+                  fontWeight: mode === 'html' ? 600 : 500,
+                  cursor: "pointer",
+                  transition: "all 0.2s",
+                }}
+              >
+                🌐 HTML
+              </button>
+            </div>
+          </div>
+
+          {/* Engine selector – LaTeX only */}
+          {mode === 'latex' && (
+            <div>
+              <label style={{ fontSize: 10, color: "var(--primary-solid)", fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, display: "block", marginBottom: 8 }}>
+                Compiler Engine
+              </label>
+              <select
+                value={compileEngine}
+                onChange={(e) => {
+                  setCompileEngine(e.target.value);
+                  engineRef.current = e.target.value;
+                }}
+                style={{
+                  width: "100%",
+                  background: "rgba(255,255,255,0.03)",
+                  border: "1px solid rgba(255,255,255,0.05)",
+                  color: "#cbd5e1",
+                  padding: "8px 12px",
+                  borderRadius: 10,
+                  fontSize: 12,
+                  fontWeight: 500,
+                  cursor: "pointer",
+                  outline: "none",
+                }}
+              >
+                <option value="pdflatex" style={{ background: "#121216", color: "#fafafa" }}>pdfLaTeX (Standard)</option>
+                <option value="xelatex" style={{ background: "#121216", color: "#fafafa" }}>XeLaTeX (Unicode/Bengali)</option>
+                <option value="lualatex" style={{ background: "#121216", color: "#fafafa" }}>LuaLaTeX (Unicode/Fonts)</option>
+              </select>
+            </div>
+          )}
+
+          {/* Quick template loader */}
+          <div>
+            <label style={{ fontSize: 10, color: "var(--primary-solid)", fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, display: "block", marginBottom: 8 }}>
+              Quick Templates
+            </label>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {mode === 'latex' ? (
+                Object.keys(LATEX_TEMPLATES).map((key) => (
+                  <button
+                    key={key}
+                    onClick={() => loadTemplate(key)}
+                    className="glass-btn"
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      width: "100%",
+                      padding: "8px 12px",
+                      borderRadius: 8,
+                      border: "1px solid " + (selectedTemplate === key ? "rgba(59, 130, 246, 0.25)" : "rgba(255, 255, 255, 0.03)"),
+                      background: selectedTemplate === key ? "rgba(59, 130, 246, 0.08)" : "rgba(255, 255, 255, 0.01)",
+                      color: selectedTemplate === key ? "var(--primary-solid)" : "#94a3b8",
+                      fontSize: 12,
+                      fontWeight: selectedTemplate === key ? 600 : 500,
+                    }}
+                  >
+                    <span>{latexTemplateIcons[key]}</span>
+                    <span>{latexTemplateLabels[key]}</span>
+                  </button>
+                ))
+              ) : (
+                Object.keys(HTML_TEMPLATES).map((key) => (
+                  <button
+                    key={key}
+                    onClick={() => loadTemplate(key)}
+                    className="glass-btn"
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      width: "100%",
+                      padding: "8px 12px",
+                      borderRadius: 8,
+                      border: "1px solid " + (selectedTemplate === key ? "rgba(59, 130, 246, 0.25)" : "rgba(255, 255, 255, 0.03)"),
+                      background: selectedTemplate === key ? "rgba(59, 130, 246, 0.08)" : "rgba(255, 255, 255, 0.01)",
+                      color: selectedTemplate === key ? "var(--primary-solid)" : "#94a3b8",
+                      fontSize: 12,
+                      fontWeight: selectedTemplate === key ? 600 : 500,
+                    }}
+                  >
+                    <span>{htmlTemplateIcons[key]}</span>
+                    <span>{htmlTemplateLabels[key]}</span>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+
+          {/* Stats footer block */}
+          <div style={{ marginTop: "auto", background: "rgba(255,255,255,0.01)", border: "1px solid rgba(255,255,255,0.03)", borderRadius: 10, padding: 12 }}>
+            <span style={{ fontSize: 9, color: "#475569", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, display: "block", marginBottom: 6 }}>
+              Document Stats
+            </span>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#94a3b8", marginBottom: 4 }}>
+              <span>Lines:</span>
+              <span style={{ fontWeight: 600, color: "#fff" }}>{lineCount}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#94a3b8" }}>
+              <span>Characters:</span>
+              <span style={{ fontWeight: 600, color: "#fff" }}>{code.length}</span>
+            </div>
+          </div>
+        </aside>
+
+        {/* Workspace split view */}
+        <div className="studio-workspace" style={{ display: "flex", flex: 1, overflow: "hidden", minHeight: 0 }}>
+          
+          {/* Editor pane */}
+          <div
+            className="studio-editor-pane"
+            style={{
+              width: "100%",
+              flex: "1 1 100%",
+              display: activeTab === "editor" ? "flex" : "none",
+              flexDirection: "column",
+              position: "relative",
+            }}
+          >
+            <div style={{ flex: 1, display: "flex", overflow: "hidden", position: "relative" }}>
+              {projectMode && activeFile.isBinary ? (
+                <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "#0b0b0f", gap: 16, padding: 20 }}>
+                  <img
+                    src={activeFile.content}
+                    alt={activeFile.name}
+                    style={{ maxHeight: "60%", maxWidth: "85%", objectFit: "contain", borderRadius: 8, border: "1px solid var(--border-glass)", boxShadow: "0 10px 40px rgba(0,0,0,0.6)" }}
+                  />
+                  <div style={{ textAlign: "center" }}>
+                    <div style={{ color: "var(--text-primary)", fontSize: 14, fontWeight: 600 }}>{activeFile.name}</div>
+                    <div style={{ color: "var(--text-secondary)", fontSize: 11, marginTop: 4 }}>Binary Image Asset</div>
+                    <div style={{ display: "inline-block", background: "rgba(59, 130, 246, 0.08)", border: "1px solid rgba(59, 130, 246, 0.2)", borderRadius: 6, padding: "8px 12px", color: "var(--primary-solid)", fontSize: 12, marginTop: 16, fontFamily: "monospace" }}>
+                      \includegraphics{"{"}{activeFile.name}{"}"}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <Editor
+                  height="100%"
+                  language={mode === 'latex' ? 'latex' : 'html'}
+                  theme="vs-dark"
+                  value={code}
+                  onChange={(val) => {
+                    setCode(val || "");
+                    codeRef.current = val || "";
+                  }}
+                  onMount={handleEditorDidMount}
+                  options={{
+                    minimap: { enabled: false },
+                    fontSize: 13,
+                    lineHeight: 20,
+                    fontFamily: "Fira Code, JetBrains Mono, source-code-pro, Menlo, Monaco, Consolas, monospace",
+                    automaticLayout: true,
+                    scrollbar: {
+                      vertical: 'visible',
+                      horizontal: 'visible',
+                      useShadows: false,
+                      verticalScrollbarSize: 5,
+                      horizontalScrollbarSize: 5,
+                    },
+                    suggestOnTriggerCharacters: true,
+                    wordWrap: "on",
+                  }}
+                />
+              )}
+            </div>
+          </div>
+
+          {/* Preview pane */}
+          <div
+            className="studio-preview-pane"
+            style={{
+              width: "100%",
+              flex: "1 1 100%",
+              display: activeTab === "preview" ? "flex" : "none",
+              flexDirection: "column",
+              background: "#030307",
+            }}
+          >
+            {error && (
+              <div
+                style={{
+                  background: "rgba(239, 68, 68, 0.08)",
+                  borderBottom: "1px solid rgba(239, 68, 68, 0.2)",
+                  padding: 16,
+                  maxHeight: 250,
+                  overflow: "auto",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                  <span style={{
+                    background: "rgba(239, 68, 68, 0.15)",
+                    color: "#ef4444",
+                    padding: "3px 10px",
+                    borderRadius: 20,
+                    fontSize: 10,
+                    fontWeight: 700,
+                  }}>
+                    ✕ COMPILATION ERROR
+                  </span>
+                  {compiledWith && (
+                    <span style={{ fontSize: 11, color: "#64748b" }}>engine: {compiledWith}</span>
+                  )}
+                </div>
+                <pre style={{
+                  fontSize: 11,
+                  color: "#f87171",
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                  margin: 0,
+                  fontFamily: "inherit",
+                  lineHeight: 1.6,
                 }}>
-                  {mode === 'latex' ? '📄' : '🌐'}
+                  {error}
+                </pre>
+              </div>
+            )}
+
+            {/* SKELETON PRELOADING FOR PDF VIEW */}
+            {compiling ? (
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 16, padding: "30px", overflow: "hidden" }}>
+                {/* Visual Skeleton Shimmer page representation */}
+                <div className="glass-card shimmer-bg" style={{ flex: 1, padding: 40, display: "flex", flexDirection: "column", gap: 14 }}>
+                  <div style={{ height: 28, width: "60%", background: "rgba(255,255,255,0.06)", borderRadius: 6 }} />
+                  <div style={{ height: 14, width: "30%", background: "rgba(255,255,255,0.04)", borderRadius: 6, marginBottom: 20 }} />
+                  <div style={{ height: 12, width: "90%", background: "rgba(255,255,255,0.03)", borderRadius: 4 }} />
+                  <div style={{ height: 12, width: "95%", background: "rgba(255,255,255,0.03)", borderRadius: 4 }} />
+                  <div style={{ height: 12, width: "88%", background: "rgba(255,255,255,0.03)", borderRadius: 4 }} />
+                  <div style={{ height: 12, width: "92%", background: "rgba(255,255,255,0.03)", borderRadius: 4, marginBottom: 20 }} />
+                  <div style={{ height: 150, width: "100%", background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.04)", borderRadius: 8 }} />
                 </div>
-                <div style={{ fontSize: 13, textAlign: "center", lineHeight: 1.8 }}>
-                  Press{" "}
-                  <strong style={{ color: "#7c3aed" }}>Compile</strong> or{" "}
-                  <strong style={{ color: "#7c3aed" }}>Ctrl+Enter</strong>
-                </div>
-                <div style={{ fontSize: 10, color: "#1e1e30", marginTop: 6 }}>
-                  Server: {API_BASE_URL}
+                {/* Floating spinner centered overlay */}
+                <div style={{
+                  position: "absolute",
+                  inset: 0,
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background: "rgba(3,3,7,0.45)",
+                  backdropFilter: "blur(4px)",
+                }}>
+                  <div className="neon-spinner" />
+                  <span style={{ fontSize: 13, color: "#fff", fontWeight: 600, marginTop: 16, letterSpacing: 0.5 }}>
+                    Compiling Source...
+                  </span>
                 </div>
               </div>
-            )
-          )}
+            ) : pdfUrl ? (
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    padding: "7px 16px",
+                    borderBottom: "1px solid rgba(255,255,255,0.03)",
+                    background: "rgba(10,10,18,0.2)",
+                  }}
+                >
+                  <span style={{ fontSize: 11, color: "#10b981", display: "flex", alignItems: "center", gap: 6, fontWeight: 500 }}>
+                    <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#10b981", boxShadow: "0 0 6px rgba(16,185,129,0.3)" }} />
+                    Active: {compiledWith} build
+                  </span>
+                </div>
+                <div style={{ flex: 1, minHeight: 0 }}>
+                  <CustomPDFViewer
+                    url={pdfUrl}
+                    synctexData={synctexData}
+                    onPageDoubleClick={handlePageDoubleClick}
+                    viewerRef={pdfViewerRef}
+                  />
+                </div>
+              </div>
+            ) : (
+              !error && (
+                <div
+                  style={{
+                    flex: 1,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexDirection: "column",
+                    gap: 16,
+                    color: "#475569",
+                  }}
+                >
+                  <div style={{
+                    fontSize: 64,
+                    filter: "grayscale(1) brightness(0.6)",
+                  }}>
+                    {mode === 'latex' ? '📄' : '🌐'}
+                  </div>
+                  <div style={{ fontSize: 13, fontWeight: 500, textAlign: "center", color: "#64748b" }}>
+                    Workspace is ready. Press <strong style={{ color: "var(--primary-solid)" }}>Compile</strong> to generate preview.
+                  </div>
+                  <div style={{ fontSize: 10, color: "#334155" }}>
+                    Server Node: {API_BASE_URL}
+                  </div>
+                </div>
+              )
+            )}
+          </div>
         </div>
       </div>
 
       {/* ========== GLOBAL STYLES ========== */}
       <style>{`
-        @keyframes spin { to { transform: rotate(360deg); } }
-        @keyframes fadeInUp {
-          from { opacity: 0; transform: translateY(10px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
         @keyframes toastIn {
           from { opacity: 0; transform: translateX(-50%) translateY(12px); }
           to { opacity: 1; transform: translateX(-50%) translateY(0); }
         }
-        ::selection { background: rgba(124,58,237,0.25); }
-        ::-webkit-scrollbar { width: 6px; height: 6px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.06); border-radius: 3px; }
-        ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.1); }
+        ::selection { background: rgba(59, 130, 246, 0.2); }
 
-        button:hover { filter: brightness(1.15); }
-        a:hover { filter: brightness(1.15); }
-        select option { background: #12121a; color: #a0a0b0; }
+        @media (min-width: 1024px) {
+          .studio-tabbar {
+            display: none !important;
+          }
+          .studio-editor-pane {
+            display: flex !important;
+            width: 50% !important;
+            flex: 1 1 50% !important;
+            border-right: 1px solid rgba(255,255,255,0.04) !important;
+          }
+          .studio-preview-pane {
+            display: flex !important;
+            width: 50% !important;
+            flex: 1 1 50% !important;
+          }
+        }
       `}</style>
     </div>
   );
