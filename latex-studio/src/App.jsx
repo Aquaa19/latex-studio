@@ -10,7 +10,7 @@ import "react-pdf/dist/Page/TextLayer.css";
 // Set up the PDF.js worker from a CDN
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:2345";
+let API_BASE_URL = "http://localhost:2345";
 
 // ---------- LaTeX package detection (unchanged) ----------
 const KNOWN_PACKAGES = {
@@ -692,6 +692,23 @@ export default function LaTeXApp() {
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
   const [synctexData, setSynctexData] = useState(null);
+  const [apiUrlState, setApiUrlState] = useState(import.meta.env.VITE_API_BASE_URL || "http://localhost:2345");
+  API_BASE_URL = apiUrlState;
+
+  useEffect(() => {
+    const fallbackUrl = import.meta.env.VITE_API_BASE_URL || "https://latex-studio.onrender.com";
+    fetch("http://localhost:2345/health", { mode: "cors" })
+      .then(res => {
+        if (res.ok) {
+          setApiUrlState("http://localhost:2345");
+        } else {
+          setApiUrlState(fallbackUrl);
+        }
+      })
+      .catch(() => {
+        setApiUrlState(fallbackUrl);
+      });
+  }, []);
 
   const textareaRef = useRef(null);
   const highlightRef = useRef(null);
