@@ -679,6 +679,7 @@ export default function LaTeXApp() {
   const [mode, setMode] = useState(initialState.mode ?? 'latex');
   const [projectFiles, setProjectFiles] = useState(initialState.projectFiles ?? DEFAULT_PROJECT_FILES);
   const [activeFileId, setActiveFileId] = useState(initialState.activeFileId ?? "1");
+  const [rootFileId, setRootFileId] = useState(initialState.rootFileId ?? "1");
   const [basicCode, setBasicCode] = useState(initialState.basicCode ?? LATEX_TEMPLATES.blank);
 
   // Transient states
@@ -750,6 +751,7 @@ export default function LaTeXApp() {
   const projectModeRef = useRef(projectMode);
   const projectFilesRef = useRef(projectFiles);
   const activeFileIdRef = useRef(activeFileId);
+  const rootFileIdRef = useRef(rootFileId);
 
   useEffect(() => { codeRef.current = code; }, [code]);
   useEffect(() => { modeRef.current = mode; }, [mode]);
@@ -757,6 +759,7 @@ export default function LaTeXApp() {
   useEffect(() => { projectModeRef.current = projectMode; }, [projectMode]);
   useEffect(() => { projectFilesRef.current = projectFiles; }, [projectFiles]);
   useEffect(() => { activeFileIdRef.current = activeFileId; }, [activeFileId]);
+  useEffect(() => { rootFileIdRef.current = rootFileId; }, [rootFileId]);
 
   // Persistence Auto-save Effect
   useEffect(() => {
@@ -765,6 +768,7 @@ export default function LaTeXApp() {
       mode,
       projectFiles,
       activeFileId,
+      rootFileId,
       basicCode,
     };
     try {
@@ -772,7 +776,7 @@ export default function LaTeXApp() {
     } catch (e) {
       console.error("Failed to auto-save workspace state:", e);
     }
-  }, [projectMode, mode, projectFiles, activeFileId, basicCode]);
+  }, [projectMode, mode, projectFiles, activeFileId, rootFileId, basicCode]);
 
   const lineCount = code.split("\n").length;
 
@@ -874,7 +878,8 @@ export default function LaTeXApp() {
     setCompiledWith(currentMode === 'latex' ? currentEngine : 'html');
 
     const activeF = files.find(f => f.id === actId) || files[0];
-    const mainF = files.find(f => f.name === "main.tex") || activeF;
+    const rootId = rootFileIdRef.current;
+    const mainF = files.find(f => f.id === rootId) || files.find(f => f.name === "main.tex") || activeF;
 
     const compileCode = isProj ? mainF.content : codeRef.current;
     const filesData = isProj
@@ -1820,17 +1825,64 @@ export default function LaTeXApp() {
                         whiteSpace: "nowrap",
                       }}
                     >
-                      {file.name === "main.tex" ? "👑 " : file.isBinary ? "🖼️ " : "📄 "}
+                      {file.id === rootFileId ? "👑 " : file.isBinary ? "🖼️ " : "📄 "}
                       {file.name}
                     </button>
-                    {file.name !== "main.tex" && (
+                    <div style={{ display: "flex", gap: 3, alignItems: "center" }}>
+                      {file.id !== rootFileId && !file.isBinary && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setRootFileId(file.id);
+                            showToast(`Set "${file.name}" as Main Document`);
+                          }}
+                          style={{
+                            background: "transparent",
+                            border: "none",
+                            color: "#94a3b8",
+                            cursor: "pointer",
+                            fontSize: 10,
+                            padding: "2px 4px",
+                          }}
+                          title="Set as Main Document"
+                        >
+                          👑
+                        </button>
+                      )}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const newName = prompt(`Enter new name for "${file.name}":`, file.name);
+                          if (newName && newName.trim() !== "") {
+                            setProjectFiles(prev => prev.map(f => f.id === file.id ? { ...f, name: newName.trim() } : f));
+                            showToast(`Renamed file to ${newName}`);
+                          }
+                        }}
+                        style={{
+                          background: "transparent",
+                          border: "none",
+                          color: "#71717a",
+                          cursor: "pointer",
+                          fontSize: 10,
+                          padding: "2px 4px",
+                        }}
+                        title="Rename file"
+                      >
+                        ✏️
+                      </button>
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
                           if (confirm(`Delete file "${file.name}"?`)) {
-                            setProjectFiles(prev => prev.filter(f => f.id !== file.id));
+                            const newFiles = projectFiles.filter(f => f.id !== file.id);
+                            setProjectFiles(newFiles);
+                            if (rootFileId === file.id) {
+                              const fallbackRoot = newFiles.find(f => !f.isBinary) || newFiles[0];
+                              if (fallbackRoot) setRootFileId(fallbackRoot.id);
+                            }
                             if (activeFileId === file.id) {
-                              setActiveFileId("1"); // revert to main
+                              const fallbackActive = newFiles[0];
+                              if (fallbackActive) setActiveFileId(fallbackActive.id);
                             }
                             showToast(`Deleted file: ${file.name}`);
                           }
@@ -1838,7 +1890,7 @@ export default function LaTeXApp() {
                         style={{
                           background: "transparent",
                           border: "none",
-                          color: "#71717a",
+                          color: "#ef4444",
                           cursor: "pointer",
                           fontSize: 11,
                           padding: "2px 4px",
@@ -1847,7 +1899,7 @@ export default function LaTeXApp() {
                       >
                         ✕
                       </button>
-                    )}
+                    </div>
                   </div>
                 ))}
               </div>
