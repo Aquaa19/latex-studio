@@ -420,10 +420,13 @@ function CustomPDFViewer({ url, synctexData, onPageDoubleClick, viewerRef }) {
         const canvas = canvasRefs.current[pageNumber];
         if (!canvas) return;
 
-        const viewport = page.getViewport({ scale });
+        const dpr = window.devicePixelRatio || 1;
+        const viewport = page.getViewport({ scale: scale * dpr });
         const context = canvas.getContext("2d");
         canvas.height = viewport.height;
         canvas.width = viewport.width;
+        canvas.style.height = `${viewport.height / dpr}px`;
+        canvas.style.width = `${viewport.width / dpr}px`;
 
         const renderContext = {
           canvasContext: context,
