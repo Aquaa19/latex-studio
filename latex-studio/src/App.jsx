@@ -56,25 +56,7 @@ const UNICODE_PACKAGES = ["fontspec", "polyglossia"];
 
 // ---------- LaTeX Templates (unchanged) ----------
 const LATEX_TEMPLATES = {
-  blank: `\\documentclass[12pt]{article}
-\\usepackage[utf8]{inputenc}
-\\usepackage[T1]{fontenc}
-\\usepackage{amsmath, amssymb}
-\\usepackage{graphicx}
-\\usepackage{hyperref}
-\\usepackage[margin=1in]{geometry}
-
-\\title{Your Title Here}
-\\author{Author Name}
-\\date{\\today}
-
-\\begin{document}
-\\maketitle
-
-\\section{Introduction}
-Write your content here.
-
-\\end{document}`,
+  blank: ``,
 
   math: `\\documentclass[12pt]{article}
 \\usepackage[utf8]{inputenc}
@@ -262,25 +244,7 @@ Pressure & 101.3 & kPa \\\\
 
 // ---------- NEW: HTML Templates ----------
 const HTML_TEMPLATES = {
-  basic: `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <title>HTML to PDF</title>
-  <style>
-    body { font-family: sans-serif; line-height: 1.5; max-width: 800px; margin: 0 auto; padding: 2em; }
-    h1 { color: #7c3aed; }
-  </style>
-</head>
-<body>
-  <h1>Hello from HTML!</h1>
-  <p>This PDF was generated from HTML using Puppeteer.</p>
-  <ul>
-    <li>You can use any CSS</li>
-    <li>Images, tables, flexbox…</li>
-  </ul>
-</body>
-</html>`,
+  basic: ``,
 
   resume: `<!DOCTYPE html>
 <html>
@@ -2097,33 +2061,57 @@ export default function LaTeXApp() {
                   </div>
                 </div>
               ) : (
-                <Editor
-                  height="100%"
-                  language={mode === 'latex' ? 'latex' : 'html'}
-                  theme="vs-dark"
-                  value={code}
-                  onChange={(val) => {
-                    setCode(val || "");
-                    codeRef.current = val || "";
-                  }}
-                  onMount={handleEditorDidMount}
-                  options={{
-                    minimap: { enabled: false },
-                    fontSize: 13,
-                    lineHeight: 20,
-                    fontFamily: "Fira Code, JetBrains Mono, source-code-pro, Menlo, Monaco, Consolas, monospace",
-                    automaticLayout: true,
-                    scrollbar: {
-                      vertical: 'visible',
-                      horizontal: 'visible',
-                      useShadows: false,
-                      verticalScrollbarSize: 5,
-                      horizontalScrollbarSize: 5,
-                    },
-                    suggestOnTriggerCharacters: true,
-                    wordWrap: "on",
-                  }}
-                />
+                <div style={{ flex: 1, position: "relative", height: "100%" }}>
+                  {!code && (
+                    <div
+                      style={{
+                        position: "absolute",
+                        left: 60,
+                        top: 8,
+                        color: "rgba(255, 255, 255, 0.18)",
+                        fontFamily: "Fira Code, JetBrains Mono, source-code-pro, Menlo, Monaco, Consolas, monospace",
+                        fontSize: 13,
+                        lineHeight: "20px",
+                        pointerEvents: "none",
+                        whiteSpace: "pre",
+                        zIndex: 5,
+                      }}
+                    >
+                      {mode === 'latex' ? (
+                        `\\documentclass{article}\n\\begin{document}\n  % Start typing your LaTeX code here...\n\\end{document}`
+                      ) : (
+                        `<!DOCTYPE html>\n<html>\n<body>\n  <!-- Start typing your HTML code here... -->\n</body>\n</html>`
+                      )}
+                    </div>
+                  )}
+                  <Editor
+                    height="100%"
+                    language={mode === 'latex' ? 'latex' : 'html'}
+                    theme="vs-dark"
+                    value={code}
+                    onChange={(val) => {
+                      setCode(val || "");
+                      codeRef.current = val || "";
+                    }}
+                    onMount={handleEditorDidMount}
+                    options={{
+                      minimap: { enabled: false },
+                      fontSize: 13,
+                      lineHeight: 20,
+                      fontFamily: "Fira Code, JetBrains Mono, source-code-pro, Menlo, Monaco, Consolas, monospace",
+                      automaticLayout: true,
+                      scrollbar: {
+                        vertical: 'visible',
+                        horizontal: 'visible',
+                        useShadows: false,
+                        verticalScrollbarSize: 5,
+                        horizontalScrollbarSize: 5,
+                      },
+                      suggestOnTriggerCharacters: true,
+                      wordWrap: "on",
+                    }}
+                  />
+                </div>
               )}
             </div>
           </div>
