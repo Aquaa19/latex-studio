@@ -1803,52 +1803,63 @@ export default function LaTeXApp() {
                       border: "1px solid " + (activeFileId === file.id ? "rgba(59, 130, 246, 0.25)" : "transparent"),
                     }}
                   >
-                    <button
-                      onClick={() => {
-                        setActiveFileId(file.id);
-                        if (editorRef.current && monacoRef.current) {
-                          const model = editorRef.current.getModel();
-                          monacoRef.current.editor.setModelMarkers(model, "latex-diagnostics", []);
-                        }
-                      }}
-                      style={{
-                        background: "transparent",
-                        border: "none",
-                        color: activeFileId === file.id ? "var(--primary-solid)" : "#94a3b8",
-                        fontSize: 12,
-                        fontWeight: activeFileId === file.id ? 600 : 400,
-                        cursor: "pointer",
-                        textAlign: "left",
-                        flex: 1,
-                        textOverflow: "ellipsis",
-                        overflow: "hidden",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {file.id === rootFileId ? "👑 " : file.isBinary ? "🖼️ " : "📄 "}
-                      {file.name}
-                    </button>
-                    <div style={{ display: "flex", gap: 3, alignItems: "center" }}>
-                      {file.id !== rootFileId && !file.isBinary && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1, overflow: "hidden" }}>
+                      {!file.isBinary ? (
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            setRootFileId(file.id);
-                            showToast(`Set "${file.name}" as Main Document`);
+                            if (file.id !== rootFileId) {
+                              setRootFileId(file.id);
+                              showToast(`Set "${file.name}" as Main Document`);
+                            }
                           }}
                           style={{
                             background: "transparent",
                             border: "none",
-                            color: "#94a3b8",
-                            cursor: "pointer",
-                            fontSize: 10,
-                            padding: "2px 4px",
+                            cursor: file.id === rootFileId ? "default" : "pointer",
+                            fontSize: 12,
+                            padding: 0,
+                            display: "flex",
+                            alignItems: "center",
+                            opacity: file.id === rootFileId ? 1 : 0.25,
+                            filter: file.id === rootFileId ? "none" : "grayscale(100%)",
+                            transition: "all 0.2s",
                           }}
-                          title="Set as Main Document"
+                          title={file.id === rootFileId ? "Main Document" : "Set as Main Document"}
                         >
                           👑
                         </button>
+                      ) : (
+                        <span style={{ fontSize: 12, display: "flex", alignItems: "center" }}>🖼️</span>
                       )}
+
+                      <button
+                        onClick={() => {
+                          setActiveFileId(file.id);
+                          if (editorRef.current && monacoRef.current) {
+                            const model = editorRef.current.getModel();
+                            monacoRef.current.editor.setModelMarkers(model, "latex-diagnostics", []);
+                          }
+                        }}
+                        style={{
+                          background: "transparent",
+                          border: "none",
+                          color: activeFileId === file.id ? "var(--primary-solid)" : "#94a3b8",
+                          fontSize: 12,
+                          fontWeight: activeFileId === file.id ? 600 : 400,
+                          cursor: "pointer",
+                          textAlign: "left",
+                          flex: 1,
+                          textOverflow: "ellipsis",
+                          overflow: "hidden",
+                          whiteSpace: "nowrap",
+                          padding: "2px 0",
+                        }}
+                      >
+                        {file.name}
+                      </button>
+                    </div>
+                    <div style={{ display: "flex", gap: 3, alignItems: "center" }}>
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
