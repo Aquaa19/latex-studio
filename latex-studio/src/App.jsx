@@ -10,8 +10,6 @@ import "react-pdf/dist/Page/TextLayer.css";
 // Set up the PDF.js worker from a CDN
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
-let API_BASE_URL = "http://localhost:2345";
-
 // ---------- LaTeX package detection (unchanged) ----------
 const KNOWN_PACKAGES = {
   "\\frac": "amsmath", "\\dfrac": "amsmath", "\\tfrac": "amsmath",
@@ -285,7 +283,7 @@ const HTML_TEMPLATES = {
 };
 
 // Lightweight page renderer component for continuous vertical scroll
-function PDFPage({ pdf, pageNum, scale, synctexData, onPageDoubleClick, canvasRefs, observePage }) {
+function PDFPage({ pdf, pageNum, scale, synctexData, onPageDoubleClick, onRegisterCanvas, observePage }) {
   const canvasRef = useRef(null);
 
   useEffect(() => {
@@ -375,7 +373,9 @@ function PDFPage({ pdf, pageNum, scale, synctexData, onPageDoubleClick, canvasRe
         <canvas
           ref={el => {
             canvasRef.current = el;
-            canvasRefs.current[pageNum] = el;
+            if (onRegisterCanvas) {
+              onRegisterCanvas(el);
+            }
           }}
           style={{
             boxShadow: "0 10px 40px rgba(0,0,0,0.5)",
@@ -593,7 +593,13 @@ function CustomPDFViewer({ url, synctexData, onPageDoubleClick, viewerRef }) {
                   scale={scale}
                   synctexData={synctexData}
                   onPageDoubleClick={onPageDoubleClick}
-                  canvasRefs={canvasRefs}
+                  onRegisterCanvas={(el) => {
+                    if (el) {
+                      canvasRefs.current[pageNum] = el;
+                    } else {
+                      delete canvasRefs.current[pageNum];
+                    }
+                  }}
                   observePage={observePage}
                 />
               ))}
@@ -606,25 +612,6 @@ function CustomPDFViewer({ url, synctexData, onPageDoubleClick, viewerRef }) {
 }
 
 // ---------- Helper Functions ----------
-function highlightCode(code, mode) {
-  if (!code) return "";
-  let html = code.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  if (mode === 'latex') {
-    html = html.replace(/(%.*)$/gm, '<span style="color:#6b7280;font-style:italic">$1</span>');
-    html = html.replace(/(\\[a-zA-Z@]+)/g, '<span style="color:#c084fc">$1</span>');
-    html = html.replace(/([{}])/g, '<span style="color:#f59e0b">$1</span>');
-    html = html.replace(/(\$\$?)/g, '<span style="color:#34d399">$1</span>');
-    html = html.replace(/(\[|\])/g, '<span style="color:#60a5fa">$1</span>');
-  } else {
-    html = html.replace(/(&lt;!--.*?--&gt;)/g, '<span style="color:#6b7280;font-style:italic">$1</span>');
-    html = html.replace(/&lt;(\/?[a-zA-Z0-9-]+)/g, '<span style="color:#f59e0b">&lt;$1</span>');
-    html = html.replace(/&gt;/g, '<span style="color:#f59e0b">&gt;</span>');
-    html = html.replace(/([a-zA-Z-]+)=/g, '<span style="color:#60a5fa">$1</span>=');
-    html = html.replace(/&quot;(.*?)&quot;/g, '<span style="color:#34d399">&quot;$1&quot;</span>');
-  }
-  return html;
-}
-
 function detectMissingPackages(code) {
   const declaredPackages = new Set();
   const pkgRegex = /\\usepackage(?:\[.*?\])?\{([^}]+)\}/g;
@@ -748,12 +735,10 @@ export default function LaTeXApp() {
   const [showTemplateMenu, setShowTemplateMenu] = useState(false);
   const [compileEngine, setCompileEngine] = useState("pdflatex");
   const [compiledWith, setCompiledWith] = useState("");
-  const [showScrollTop, setShowScrollTop] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
   const [synctexData, setSynctexData] = useState(null);
   const [apiUrlState, setApiUrlState] = useState(import.meta.env.VITE_API_BASE_URL || "http://localhost:2345");
-  API_BASE_URL = apiUrlState;
 
   useEffect(() => {
     const fallbackUrl = import.meta.env.VITE_API_BASE_URL || "https://latex-studio.onrender.com";
@@ -770,9 +755,6 @@ export default function LaTeXApp() {
       });
   }, []);
 
-  const textareaRef = useRef(null);
-  const highlightRef = useRef(null);
-  const lineRef = useRef(null);
   const mainContainerRef = useRef(null);
   const editorRef = useRef(null);
   const monacoRef = useRef(null);
@@ -836,27 +818,6 @@ export default function LaTeXApp() {
 
   const lineCount = code.split("\n").length;
 
-  // Scroll-to-top detection
-  useEffect(() => {
-    const handleScroll = () => {
-      const textarea = textareaRef.current;
-      if (textarea) {
-        setShowScrollTop(textarea.scrollTop > 400);
-      }
-    };
-    const textarea = textareaRef.current;
-    if (textarea) {
-      textarea.addEventListener("scroll", handleScroll);
-      return () => textarea.removeEventListener("scroll", handleScroll);
-    }
-  }, [activeTab]);
-
-  const scrollToTop = () => {
-    if (textareaRef.current) {
-      textareaRef.current.scrollTo({ top: 0, behavior: "smooth" });
-    }
-  };
-
   // Toast notification
   const showToast = (message) => {
     setToastMessage(message);
@@ -873,20 +834,12 @@ export default function LaTeXApp() {
 
   // Close template menu on click outside
   useEffect(() => {
-    const handleClickOutside = (e) => {
+    const handleClickOutside = () => {
       if (showTemplateMenu) setShowTemplateMenu(false);
     };
     document.addEventListener("click", handleClickOutside);
     return () => document.removeEventListener("click", handleClickOutside);
   }, [showTemplateMenu]);
-
-  const syncScroll = useCallback(() => {
-    if (textareaRef.current && highlightRef.current && lineRef.current) {
-      highlightRef.current.scrollTop = textareaRef.current.scrollTop;
-      highlightRef.current.scrollLeft = textareaRef.current.scrollLeft;
-      lineRef.current.scrollTop = textareaRef.current.scrollTop;
-    }
-  }, []);
 
   const parseLaTeXErrors = (logText) => {
     if (!logText) return [];
@@ -945,8 +898,8 @@ export default function LaTeXApp() {
       : null;
 
     const url = currentMode === 'latex'
-      ? `${API_BASE_URL}/compile`
-      : `${API_BASE_URL}/compile-html`;
+      ? `${apiUrlState}/compile`
+      : `${apiUrlState}/compile-html`;
     const body = currentMode === 'latex'
       ? JSON.stringify({ code: compileCode, engine: currentEngine, files: filesData })
       : JSON.stringify({ html: compileCode });
@@ -965,7 +918,7 @@ export default function LaTeXApp() {
       .then((data) => {
         if (data.success) {
           const timestamp = Date.now();
-          const freshUrl = `${API_BASE_URL}/pdf?v=${data.version}&t=${timestamp}`;
+          const freshUrl = `${apiUrlState}/pdf?v=${data.version}&t=${timestamp}`;
           setPdfUrl(freshUrl);
           setSynctexData(data.synctex || null);
           setActiveTab("preview");
@@ -1000,7 +953,7 @@ export default function LaTeXApp() {
       .catch((err) => {
         const msg = err.error || err.log || String(err);
         setError(msg.includes("Failed to fetch")
-          ? `Could not connect to server. Ensure the backend is running at ${API_BASE_URL}.`
+          ? `Could not connect to server. Ensure the backend is running at ${apiUrlState}.`
           : (err.error || "Compilation failed"));
         setCompileLog(err.log || null);
 
@@ -1020,7 +973,7 @@ export default function LaTeXApp() {
         }
         setCompiling(false);
       });
-  }, [compileEngine]);
+  }, [apiUrlState]);
 
   // ---------- LaTeX pre-compilation checks ----------
   const handleCompile = useCallback(() => {
@@ -1290,24 +1243,6 @@ export default function LaTeXApp() {
     basic: "🌐", resume: "📝", invoice: "🧾",
   };
 
-  // Shared glass button style
-  const glassBtn = (active = false) => ({
-    background: active ? "rgba(124,58,237,0.15)" : "rgba(255,255,255,0.03)",
-    backdropFilter: "blur(12px)",
-    WebkitBackdropFilter: "blur(12px)",
-    border: active ? "1px solid rgba(124,58,237,0.3)" : "1px solid rgba(255,255,255,0.06)",
-    color: active ? "#c084fc" : "#a0a0b0",
-    padding: "6px 14px",
-    borderRadius: 8,
-    fontSize: 12,
-    cursor: "pointer",
-    fontFamily: "inherit",
-    transition: "all 0.25s ease",
-    display: "flex",
-    alignItems: "center",
-    gap: 6,
-  });
-
   return (
     <div
       ref={mainContainerRef}
@@ -1423,7 +1358,7 @@ export default function LaTeXApp() {
           {pdfUrl && (
             <>
               <a
-                href={`${API_BASE_URL}/pdf`}
+                href={`${apiUrlState}/pdf`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="glass-btn"
@@ -1442,7 +1377,7 @@ export default function LaTeXApp() {
                 <span>↗ Open</span>
               </a>
               <a
-                href={`${API_BASE_URL}/download`}
+                href={`${apiUrlState}/download`}
                 download="document.pdf"
                 style={{
                   background: "rgba(16, 185, 129, 0.12)",
@@ -2410,7 +2345,7 @@ export default function LaTeXApp() {
                     Workspace is ready. Press <strong style={{ color: "var(--primary-solid)" }}>Compile</strong> to generate preview.
                   </div>
                   <div style={{ fontSize: 10, color: "#334155" }}>
-                    Server Node: {API_BASE_URL}
+                    Server Node: {apiUrlState}
                   </div>
                 </div>
               )

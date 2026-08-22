@@ -1,11 +1,69 @@
 {
-  "name": "latex-backend",
+  "name": "latex-studio",
   "version": "1.0.0",
-  "main": "server.js",
+  "description": "LaTeX Studio — Offline Desktop LaTeX & HTML-to-PDF Studio",
+  "main": "electron/main.cjs",
+  "author": "Arkadyuti Mandal",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "build:ui": "npm --prefix latex-studio run build",
+    "app:start": "electron .",
+    "dist:win": "npm run build:ui && electron-builder --win"
   },
   "dependencies": {
     "puppeteer": "^24.37.2"
+  },
+  "devDependencies": {
+    "electron": "^34.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.latexstudio.app",
+    "productName": "LaTeX Studio",
+    "copyright": "Copyright © 2026",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "latex-studio/dist/**/*",
+      "latex-studio/public/**/*",
+      "fonts/**/*",
+      "server.js",
+      "package.json"
+    ],
+    "extraResources": [
+      "server.js",
+      "fonts/**/*",
+      "latex-studio/dist/**/*",
+      "latex-studio/public/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "latex-studio/public/TeXForge.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "LaTeX Studio"
+    },
+    "portable": {
+      "artifactName": "LaTeX-Studio-Portable-${version}.exe"
+    }
   }
 }

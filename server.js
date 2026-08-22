@@ -5,7 +5,15 @@ const path = require("path");
 const os = require("os");
 const crypto = require("crypto");
 const zlib = require("zlib");
-const puppeteer = require("puppeteer"); // <-- new
+let puppeteer = null;
+try {
+  puppeteer = require("puppeteer");
+} catch (e) {}
+
+let electronModule = null;
+try {
+  electronModule = require("electron");
+} catch (e) {}
 
 function parseSyncTeX(synctexGzPath) {
   try {
@@ -71,6 +79,21 @@ if (isWindows) {
   }
 }
 
+// Detect if MiKTeX is installed to enable automatic package installation
+let isMiKTeX = false;
+try {
+  const versionOutput = execSync("pdflatex --version", { stdio: "pipe" }).toString();
+  if (/miktex/i.test(versionOutput)) {
+    isMiKTeX = true;
+  }
+} catch (e) {}
+
+if (isMiKTeX) {
+  try {
+    execSync("initexmf --set-config-value=[MPM]AutoInstall=1", { stdio: "pipe" });
+  } catch (e) {}
+}
+
 const findCmd = isWindows ? "where" : "which";
 const PORT = process.env.PORT || 2345;
 
@@ -86,7 +109,9 @@ let latestPdf = null;
 let pdfVersion = 0;
 
 // ---------- LaTeX stuff (unchanged) ----------
-const PROJECT_FONTS_DIR = path.join(__dirname, "fonts");
+const PROJECT_FONTS_DIR = (process.resourcesPath && fs.existsSync(path.join(process.resourcesPath, "fonts")))
+  ? path.join(process.resourcesPath, "fonts")
+  : path.join(__dirname, "fonts");
 let hasLocalFonts = false;
 try {
   if (fs.existsSync(PROJECT_FONTS_DIR) && fs.statSync(PROJECT_FONTS_DIR).isDirectory()) {
@@ -156,16 +181,21 @@ function compileLaTeX(code, engine, files, callback) {
 
   const engineCmd = { pdflatex: "pdflatex", xelatex: "xelatex", lualatex: "lualatex" }[engine] || "pdflatex";
   const env = { ...process.env };
+  if (isMiKTeX) {
+    env.MIKTEX_AUTOINSTALL = "1";
+    env.MIKTEX_ENABLE_INSTALLER = "1";
+  }
   if (hasLocalFonts && (engine === "xelatex" || engine === "lualatex")) {
     const existing = env.OSFONTDIR || '';
     const sep = isWindows ? ';' : ':';
     env.OSFONTDIR = existing ? `${PROJECT_FONTS_DIR}${sep}${existing}` : PROJECT_FONTS_DIR;
   }
 
-  const execOpts = { timeout: 120000, maxBuffer: 10 * 1024 * 1024, shell: true, env };
+  const installerFlag = isMiKTeX ? (engine === "lualatex" ? "--enable-installer" : "-enable-installer") : "";
+  const execOpts = { timeout: 180000, maxBuffer: 10 * 1024 * 1024, shell: true, env };
   const baseCmd = isWindows
-    ? `cd /d "${tmpDir}" && ${engineCmd} -interaction=nonstopmode -halt-on-error -shell-escape -synctex=1 document.tex`
-    : `cd "${tmpDir}" && ${engineCmd} -interaction=nonstopmode -halt-on-error -shell-escape -synctex=1 document.tex`;
+    ? `cd /d "${tmpDir}" && ${engineCmd} ${installerFlag} -interaction=nonstopmode -halt-on-error -shell-escape -synctex=1 document.tex`
+    : `cd "${tmpDir}" && ${engineCmd} ${installerFlag} -interaction=nonstopmode -halt-on-error -shell-escape -synctex=1 document.tex`;
 
   function runPass(cmd, cb) {
     exec(cmd, execOpts, (err, stdout, stderr) => {
@@ -222,12 +252,65 @@ function extractErrors(log) {
 }
 
 // ---------- NEW: HTML → PDF using Puppeteer ----------
-async function compileHTML(htmlCode) {
-  const browser = await puppeteer.launch({
+async function launchBrowser() {
+  const baseOptions = {
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox'] // needed on some systems
-  });
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
+  };
   try {
+    return await puppeteer.launch(baseOptions);
+  } catch (err) {
+    try {
+      return await puppeteer.launch({ ...baseOptions, channel: 'chrome' });
+    } catch {
+      try {
+        return await puppeteer.launch({ ...baseOptions, channel: 'msedge' });
+      } catch {
+        throw err;
+      }
+    }
+  }
+}
+
+async function compileHTML(htmlCode) {
+  // If running in Electron, use native Chromium printToPDF (zero external dependencies)
+  if (electronModule && electronModule.BrowserWindow) {
+    let printWindow;
+    try {
+      printWindow = new electronModule.BrowserWindow({
+        show: false,
+        width: 800,
+        height: 600,
+        webPreferences: {
+          offscreen: true,
+          nodeIntegration: false,
+          contextIsolation: true
+        }
+      });
+      await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlCode)}`);
+      const pdfBuffer = await printWindow.webContents.printToPDF({
+        pageSize: 'A4',
+        printBackground: true,
+        margins: { top: 0.39, bottom: 0.39, left: 0.39, right: 0.39 }
+      });
+      return { success: true, data: pdfBuffer };
+    } catch (err) {
+      return { success: false, error: err.message };
+    } finally {
+      if (printWindow && !printWindow.isDestroyed()) {
+        printWindow.destroy();
+      }
+    }
+  }
+
+  // Fallback for standalone Node environment: use Puppeteer if available
+  if (!puppeteer) {
+    return { success: false, error: "HTML-to-PDF requires Electron or Puppeteer." };
+  }
+
+  let browser;
+  try {
+    browser = await launchBrowser();
     const page = await browser.newPage();
     // Set content – includes basic CSS for print
     await page.setContent(htmlCode, { waitUntil: 'networkidle0' });
@@ -241,7 +324,83 @@ async function compileHTML(htmlCode) {
   } catch (err) {
     return { success: false, error: err.message };
   } finally {
-    await browser.close();
+    if (browser) {
+      await browser.close();
+    }
+  }
+}
+
+// ---------- Static Frontend File Serving ----------
+const MIME_TYPES = {
+  ".html": "text/html",
+  ".js": "text/javascript",
+  ".mjs": "text/javascript",
+  ".css": "text/css",
+  ".json": "application/json",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".ttf": "font/ttf",
+  ".otf": "font/otf",
+  ".wasm": "application/wasm",
+  ".pdf": "application/pdf"
+};
+
+function serveStaticFile(req, res) {
+  const possibleRoots = [
+    ...(process.resourcesPath ? [
+      path.join(process.resourcesPath, "latex-studio", "dist"),
+      path.join(process.resourcesPath, "dist"),
+      path.join(process.resourcesPath, "latex-studio", "public"),
+      path.join(process.resourcesPath, "public")
+    ] : []),
+    path.join(__dirname, "latex-studio", "dist"),
+    path.join(__dirname, "dist"),
+    path.join(__dirname, "latex-studio", "public"),
+    path.join(__dirname, "public")
+  ];
+  let distRoot = possibleRoots.find(r => fs.existsSync(path.join(r, "index.html")));
+  if (!distRoot) {
+    distRoot = possibleRoots.find(r => fs.existsSync(r));
+  }
+  if (!distRoot) {
+    res.writeHead(404, { ...corsHeaders, "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Static frontend build not found" }));
+    return;
+  }
+
+  let reqPath = req.url.split("?")[0];
+  if (reqPath === "/") reqPath = "/index.html";
+  let filePath = path.join(distRoot, reqPath);
+
+  // Security check: ensure path is within distRoot
+  if (!filePath.startsWith(distRoot)) {
+    res.writeHead(403, { ...corsHeaders, "Content-Type": "text/plain" });
+    res.end("Forbidden");
+    return;
+  }
+
+  if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+    const ext = path.extname(filePath).toLowerCase();
+    const contentType = MIME_TYPES[ext] || "application/octet-stream";
+    res.writeHead(200, {
+      ...corsHeaders,
+      "Content-Type": contentType,
+      "Cache-Control": ext === ".html" ? "no-cache" : "max-age=31536000, immutable"
+    });
+    res.end(fs.readFileSync(filePath));
+  } else if (fs.existsSync(path.join(distRoot, "index.html"))) {
+    // SPA fallback to index.html
+    res.writeHead(200, { ...corsHeaders, "Content-Type": "text/html", "Cache-Control": "no-cache" });
+    res.end(fs.readFileSync(path.join(distRoot, "index.html")));
+  } else {
+    res.writeHead(404, { ...corsHeaders, "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Not found" }));
   }
 }
 
@@ -375,7 +534,17 @@ const server = http.createServer((req, res) => {
       catch { engines[eng] = false; }
     }
     res.writeHead(200, { ...corsHeaders, "Content-Type": "application/json" });
-    res.end(JSON.stringify({ status: "ok", engines, pdfVersion, timestamp: new Date().toISOString() }));
+    res.end(JSON.stringify({
+      status: "ok",
+      engines,
+      isMiKTeX,
+      autoInstallPackages: isMiKTeX,
+      pdfVersion,
+      timestamp: new Date().toISOString()
+    }));
+  }
+  else if (req.method === "GET") {
+    serveStaticFile(req, res);
   }
   else {
     res.writeHead(404, { ...corsHeaders, "Content-Type": "application/json" });
@@ -383,13 +552,29 @@ const server = http.createServer((req, res) => {
   }
 });
 
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`\n✅ LaTeX + HTML → PDF server running on http://0.0.0.0:${PORT}`);
-  console.log("Checking LaTeX engines...");
-  for (const eng of ["pdflatex", "xelatex", "lualatex"]) {
-    try { execSync(`${findCmd} ${eng}`, { stdio: "pipe" }); console.log(`  ✓ ${eng}`); }
-    catch { console.log(`  ✗ ${eng}`); }
+function startServer(port = PORT, cb) {
+  if (server.listening) {
+    if (cb) cb();
+    return server;
   }
-  if (hasLocalFonts) console.log(`📁 Local fonts: ${PROJECT_FONTS_DIR} (copied for LaTeX)`);
-  console.log(`🖨️  HTML→PDF: Puppeteer ready`);
-});
+  return server.listen(port, "0.0.0.0", () => {
+    console.log(`\n✅ LaTeX + HTML → PDF server running on http://0.0.0.0:${port}`);
+    console.log("Checking LaTeX engines...");
+    for (const eng of ["pdflatex", "xelatex", "lualatex"]) {
+      try { execSync(`${findCmd} ${eng}`, { stdio: "pipe" }); console.log(`  ✓ ${eng}`); }
+      catch { console.log(`  ✗ ${eng}`); }
+    }
+    if (isMiKTeX) {
+      console.log("  📦 MiKTeX: Auto package installation enabled (AutoInstall=1, -enable-installer)");
+    }
+    if (hasLocalFonts) console.log(`📁 Local fonts: ${PROJECT_FONTS_DIR} (copied for LaTeX)`);
+    console.log(`🖨️  HTML→PDF: Puppeteer ready`);
+    if (cb) cb();
+  });
+}
+
+if (require.main === module) {
+  startServer(PORT);
+}
+
+module.exports = { server, startServer, PORT };
