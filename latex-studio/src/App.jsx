@@ -284,7 +284,113 @@ const HTML_TEMPLATES = {
 </html>`,
 };
 
-// ---------- Custom PDF Viewer (unchanged) ----------
+// Lightweight page renderer component for continuous vertical scroll
+function PDFPage({ pdf, pageNum, scale, synctexData, onPageDoubleClick, canvasRefs, observePage }) {
+  const canvasRef = useRef(null);
+
+  useEffect(() => {
+    if (!pdf) return;
+    let active = true;
+    let renderTask = null;
+
+    const renderPage = async () => {
+      try {
+        const page = await pdf.getPage(pageNum);
+        if (!active) return;
+
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+
+        const dpr = window.devicePixelRatio || 1;
+        const viewport = page.getViewport({ scale: scale * dpr });
+        const context = canvas.getContext("2d");
+        
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+        canvas.style.height = `${viewport.height / dpr}px`;
+        canvas.style.width = `${viewport.width / dpr}px`;
+
+        const renderContext = {
+          canvasContext: context,
+          viewport: viewport,
+        };
+        renderTask = page.render(renderContext);
+        await renderTask.promise;
+      } catch (err) {
+        if (err && err.name !== "RenderingCancelledException") {
+          console.error(`Page ${pageNum} render error:`, err);
+        }
+      }
+    };
+
+    renderPage();
+
+    return () => {
+      active = false;
+      if (renderTask) {
+        renderTask.cancel();
+      }
+    };
+  }, [pdf, pageNum, scale]);
+
+  const onDoubleClick = (e) => {
+    if (!pdf || !synctexData) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const clickY = e.clientY - rect.top;
+
+    // Convert pixels to standard LaTeX page points (A4 ratio approximation)
+    const pdfX = (clickX / rect.width) * 595;
+    const pdfY = (clickY / rect.height) * 842;
+
+    onPageDoubleClick(pageNum, pdfX, pdfY);
+  };
+
+  return (
+    <div 
+      ref={observePage}
+      data-page={pageNum}
+      style={{ 
+        position: "relative", 
+        marginBottom: "24px",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center"
+      }}
+    >
+      <div style={{
+        alignSelf: "flex-start",
+        fontSize: "11px",
+        color: "#64748b",
+        fontWeight: "600",
+        marginBottom: "6px",
+        userSelect: "none"
+      }}>
+        Page {pageNum}
+      </div>
+      <div style={{ position: "relative" }} onDoubleClick={onDoubleClick}>
+        <canvas
+          ref={el => {
+            canvasRef.current = el;
+            canvasRefs.current[pageNum] = el;
+          }}
+          style={{
+            boxShadow: "0 10px 40px rgba(0,0,0,0.5)",
+            borderRadius: "4px",
+            background: "#fff",
+            display: "block",
+            cursor: "crosshair",
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+// ---------- Custom PDF Viewer (Vertical continuous scroll version) ----------
 function CustomPDFViewer({ url, synctexData, onPageDoubleClick, viewerRef }) {
   const [pdf, setPdf] = useState(null);
   const [numPages, setNumPages] = useState(null);
@@ -294,41 +400,83 @@ function CustomPDFViewer({ url, synctexData, onPageDoubleClick, viewerRef }) {
   const [error, setError] = useState(null);
   const containerRef = useRef(null);
   const canvasRefs = useRef({});
+  const visiblePagesRef = useRef({});
+  const observerRef = useRef(null);
+
+  // Setup observer to update visible page number during scroll
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          const pageNum = parseInt(entry.target.getAttribute("data-page"), 10);
+          if (entry.isIntersecting) {
+            visiblePagesRef.current[pageNum] = entry.intersectionRatio;
+          } else {
+            delete visiblePagesRef.current[pageNum];
+          }
+        });
+
+        const visible = Object.entries(visiblePagesRef.current);
+        if (visible.length > 0) {
+          visible.sort((a, b) => b[1] - a[1]);
+          setPageNumber(parseInt(visible[0][0], 10));
+        }
+      },
+      {
+        root: containerRef.current,
+        threshold: [0.0, 0.2, 0.5, 0.8],
+      }
+    );
+
+    observerRef.current = observer;
+
+    return () => {
+      observer.disconnect();
+      observerRef.current = null;
+    };
+  }, []);
+
+  const observePage = useCallback((el) => {
+    if (el && observerRef.current) {
+      observerRef.current.observe(el);
+    }
+  }, []);
 
   // Synchronously handle coordinate scrolling (forward sync)
   useEffect(() => {
     if (viewerRef) {
       viewerRef.current = {
         scrollToPageCoordinate: (pageNum, yPt) => {
-          setPageNumber(pageNum);
-          setTimeout(() => {
-            const canvas = canvasRefs.current[pageNum];
-            if (canvas && containerRef.current) {
-              const rect = canvas.getBoundingClientRect();
-              const container = containerRef.current;
-              const ratio = rect.height / 845;
-              const scrollY = canvas.offsetTop + (yPt * ratio) - (container.clientHeight / 2);
-              container.scrollTo({ top: Math.max(0, scrollY), behavior: "smooth" });
+          const canvas = canvasRefs.current[pageNum];
+          if (canvas && containerRef.current) {
+            const rect = canvas.getBoundingClientRect();
+            const container = containerRef.current;
+            const containerRect = container.getBoundingClientRect();
+            
+            // Calculate scale ratio relative to standard 842 A4 height points
+            const ratio = rect.height / 842;
+            const scrollY = container.scrollTop + (rect.top - containerRect.top) + (yPt * ratio) - (container.clientHeight / 2);
+            
+            container.scrollTo({ top: Math.max(0, scrollY), behavior: "smooth" });
 
-              // Highlight outline flash
-              const highlight = document.createElement("div");
-              highlight.style.position = "absolute";
-              highlight.style.left = `20px`;
-              highlight.style.top = `${canvas.offsetTop + (yPt * ratio)}px`;
-              highlight.style.width = "calc(100% - 40px)";
-              highlight.style.height = "18px";
-              highlight.style.background = "rgba(59, 130, 246, 0.18)";
-              highlight.style.borderLeft = "4px solid var(--primary-solid)";
-              highlight.style.pointerEvents = "none";
-              highlight.style.zIndex = "10";
-              highlight.style.transition = "opacity 0.8s ease";
-              canvas.parentNode.appendChild(highlight);
-              setTimeout(() => {
-                highlight.style.opacity = "0";
-                setTimeout(() => highlight.remove(), 800);
-              }, 1200);
-            }
-          }, 100);
+            // Highlight outline flash
+            const highlight = document.createElement("div");
+            highlight.style.position = "absolute";
+            highlight.style.left = `0px`;
+            highlight.style.top = `${yPt * ratio}px`;
+            highlight.style.width = "100%";
+            highlight.style.height = "18px";
+            highlight.style.background = "rgba(59, 130, 246, 0.18)";
+            highlight.style.borderLeft = "4px solid var(--primary-solid)";
+            highlight.style.pointerEvents = "none";
+            highlight.style.zIndex = "10";
+            highlight.style.transition = "opacity 0.8s ease";
+            canvas.parentNode.appendChild(highlight);
+            setTimeout(() => {
+              highlight.style.opacity = "0";
+              setTimeout(() => highlight.remove(), 800);
+            }, 1200);
+          }
         }
       };
     }
@@ -339,6 +487,7 @@ function CustomPDFViewer({ url, synctexData, onPageDoubleClick, viewerRef }) {
     if (!url) return;
     setLoading(true);
     setError(null);
+    visiblePagesRef.current = {};
 
     const loadDoc = async () => {
       try {
@@ -371,57 +520,6 @@ function CustomPDFViewer({ url, synctexData, onPageDoubleClick, viewerRef }) {
     loadDoc();
   }, [url]);
 
-  // Render active page canvas
-  useEffect(() => {
-    if (!pdf) return;
-    let active = true;
-
-    const renderPage = async () => {
-      try {
-        const page = await pdf.getPage(pageNumber);
-        if (!active) return;
-
-        const canvas = canvasRefs.current[pageNumber];
-        if (!canvas) return;
-
-        const dpr = window.devicePixelRatio || 1;
-        const viewport = page.getViewport({ scale: scale * dpr });
-        const context = canvas.getContext("2d");
-        canvas.height = viewport.height;
-        canvas.width = viewport.width;
-        canvas.style.height = `${viewport.height / dpr}px`;
-        canvas.style.width = `${viewport.width / dpr}px`;
-
-        const renderContext = {
-          canvasContext: context,
-          viewport: viewport,
-        };
-        await page.render(renderContext).promise;
-      } catch (err) {
-        console.error("Page render error:", err);
-      }
-    };
-    renderPage();
-
-    return () => { active = false; };
-  }, [pdf, pageNumber, scale]);
-
-  const onDoubleClick = (e) => {
-    if (!pdf || !synctexData) return;
-    const canvas = canvasRefs.current[pageNumber];
-    if (!canvas) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const clickX = e.clientX - rect.left;
-    const clickY = e.clientY - rect.top;
-
-    // Convert pixels to standard LaTeX page points (A4 ratio approximation)
-    const pdfX = (clickX / rect.width) * 595;
-    const pdfY = (clickY / rect.height) * 842;
-
-    onPageDoubleClick(pageNumber, pdfX, pdfY);
-  };
-
   const controlBtnStyle = {
     background: "rgba(22,22,31,0.6)",
     backdropFilter: "blur(8px)",
@@ -452,19 +550,9 @@ function CustomPDFViewer({ url, synctexData, onPageDoubleClick, viewerRef }) {
         flexShrink: 0,
       }}>
         <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-          <button
-            onClick={() => setPageNumber(p => Math.max(1, p - 1))}
-            disabled={pageNumber <= 1}
-            style={{...controlBtnStyle, opacity: pageNumber <= 1 ? 0.4 : 1}}
-          >◀</button>
-          <span style={{ fontSize: "12px", color: "#a0a0b0", minWidth: "80px", textAlign: "center" }}>
-            {pageNumber} / {numPages || '-'}
+          <span style={{ fontSize: "12px", color: "#a0a0b0", fontWeight: "500" }}>
+            Page {pageNumber} / {numPages || '-'}
           </span>
-          <button
-            onClick={() => setPageNumber(p => Math.min(numPages || p, p + 1))}
-            disabled={pageNumber >= (numPages || 1)}
-            style={{...controlBtnStyle, opacity: pageNumber >= (numPages || 1) ? 0.4 : 1}}
-          >▶</button>
         </div>
 
         <span style={{ fontSize: 9, color: "var(--primary-solid)", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 }}>
@@ -496,17 +584,19 @@ function CustomPDFViewer({ url, synctexData, onPageDoubleClick, viewerRef }) {
           </div>
         ) : (
           pdf && (
-            <div style={{ position: "relative" }} onDoubleClick={onDoubleClick}>
-              <canvas
-                ref={el => { canvasRefs.current[pageNumber] = el; }}
-                style={{
-                  boxShadow: "0 10px 40px rgba(0,0,0,0.6)",
-                  borderRadius: "4px",
-                  background: "#fff",
-                  display: "block",
-                  cursor: "crosshair",
-                }}
-              />
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: "100%" }}>
+              {Array.from({ length: numPages || 0 }, (_, i) => i + 1).map(pageNum => (
+                <PDFPage
+                  key={pageNum}
+                  pdf={pdf}
+                  pageNum={pageNum}
+                  scale={scale}
+                  synctexData={synctexData}
+                  onPageDoubleClick={onPageDoubleClick}
+                  canvasRefs={canvasRefs}
+                  observePage={observePage}
+                />
+              ))}
             </div>
           )
         )}
@@ -650,6 +740,8 @@ export default function LaTeXApp() {
   const [pdfUrl, setPdfUrl] = useState(null);
   const [compiling, setCompiling] = useState(false);
   const [error, setError] = useState(null);
+  const [compileLog, setCompileLog] = useState(null);
+  const [showFullLog, setShowFullLog] = useState(false);
   const [suggestions, setSuggestions] = useState(null);
   const [activeTab, setActiveTab] = useState("editor");
   const [selectedTemplate, setSelectedTemplate] = useState("blank");
@@ -838,6 +930,8 @@ export default function LaTeXApp() {
 
     setCompiling(true);
     setError(null);
+    setCompileLog(null);
+    setShowFullLog(false);
     setPdfUrl(null);
     setCompiledWith(currentMode === 'latex' ? currentEngine : 'html');
 
@@ -883,7 +977,8 @@ export default function LaTeXApp() {
             monacoRef.current.editor.setModelMarkers(model, "latex-diagnostics", []);
           }
         } else {
-          setError(data.error || data.log || "Compilation failed");
+          setError(data.error || "Compilation failed");
+          setCompileLog(data.log || null);
 
           // Display markers in editor if compilation log exists
           if (editorRef.current && monacoRef.current && data.log) {
@@ -906,7 +1001,8 @@ export default function LaTeXApp() {
         const msg = err.error || err.log || String(err);
         setError(msg.includes("Failed to fetch")
           ? `Could not connect to server. Ensure the backend is running at ${API_BASE_URL}.`
-          : msg);
+          : (err.error || "Compilation failed"));
+        setCompileLog(err.log || null);
 
         // Display markers on catch if log is available
         if (editorRef.current && monacoRef.current && err.log) {
@@ -1249,25 +1345,20 @@ export default function LaTeXApp() {
       >
         {/* Branding */}
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-          <div
+          <img
+            src="/TeXForge.png"
+            alt="TeXForge Logo"
             style={{
               width: 38,
               height: 38,
               borderRadius: 10,
-              background: "var(--primary-solid)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontSize: 16,
-              fontWeight: 800,
-              color: "#fff",
+              objectFit: "cover",
+              boxShadow: "0 0 10px rgba(59,130,246,0.2)"
             }}
-          >
-            Lx
-          </div>
+          />
           <div>
             <h1 style={{ fontSize: 16, fontWeight: 700, margin: 0, color: "#fff", letterSpacing: -0.3, fontFamily: "'Outfit', sans-serif" }}>
-              LaTeX Studio
+              TeXForge
             </h1>
             <span style={{ fontSize: 10, color: "var(--primary-solid)", fontWeight: 600, letterSpacing: 0.5, textTransform: "uppercase" }}>
               Enterprise Workspace
@@ -2130,39 +2221,113 @@ export default function LaTeXApp() {
             {error && (
               <div
                 style={{
-                  background: "rgba(239, 68, 68, 0.08)",
-                  borderBottom: "1px solid rgba(239, 68, 68, 0.2)",
+                  background: "rgba(239, 68, 68, 0.06)",
+                  borderBottom: "1px solid rgba(239, 68, 68, 0.15)",
                   padding: 16,
-                  maxHeight: 250,
+                  maxHeight: showFullLog ? 450 : 250,
                   overflow: "auto",
+                  display: "flex",
+                  flexDirection: "column",
+                  transition: "max-height 0.25s ease-in-out",
                 }}
               >
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                  <span style={{
-                    background: "rgba(239, 68, 68, 0.15)",
-                    color: "#ef4444",
-                    padding: "3px 10px",
-                    borderRadius: 20,
-                    fontSize: 10,
-                    fontWeight: 700,
-                  }}>
-                    ✕ COMPILATION ERROR
-                  </span>
-                  {compiledWith && (
-                    <span style={{ fontSize: 11, color: "#64748b" }}>engine: {compiledWith}</span>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{
+                      background: "rgba(239, 68, 68, 0.15)",
+                      color: "#ef4444",
+                      padding: "3px 10px",
+                      borderRadius: 20,
+                      fontSize: 10,
+                      fontWeight: 700,
+                      letterSpacing: 0.5,
+                    }}>
+                      ✕ COMPILATION ERROR
+                    </span>
+                    {compiledWith && (
+                      <span style={{ fontSize: 11, color: "#64748b" }}>engine: {compiledWith}</span>
+                    )}
+                  </div>
+                  {compileLog && (
+                    <button
+                      onClick={() => setShowFullLog(!showFullLog)}
+                      style={{
+                        background: "rgba(255, 255, 255, 0.04)",
+                        border: "1px solid rgba(255, 255, 255, 0.08)",
+                        color: "#a0a0b0",
+                        padding: "4px 10px",
+                        borderRadius: "4px",
+                        fontSize: "11px",
+                        cursor: "pointer",
+                        fontWeight: "500",
+                        transition: "all 0.15s",
+                      }}
+                      onMouseEnter={(e) => {
+                        e.target.style.background = "rgba(255, 255, 255, 0.08)";
+                        e.target.style.color = "#cbd5e1";
+                      }}
+                      onMouseLeave={(e) => {
+                        e.target.style.background = "rgba(255, 255, 255, 0.04)";
+                        e.target.style.color = "#a0a0b0";
+                      }}
+                    >
+                      {showFullLog ? "Hide Full Log" : "Show Full Log"}
+                    </button>
                   )}
                 </div>
-                <pre style={{
-                  fontSize: 11,
-                  color: "#f87171",
-                  whiteSpace: "pre-wrap",
-                  wordBreak: "break-word",
-                  margin: 0,
-                  fontFamily: "inherit",
-                  lineHeight: 1.6,
-                }}>
-                  {error}
-                </pre>
+
+                {!showFullLog ? (
+                  <pre style={{
+                    fontSize: 11,
+                    color: "#f87171",
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                    margin: 0,
+                    fontFamily: "inherit",
+                    lineHeight: 1.6,
+                  }}>
+                    {error}
+                  </pre>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10, width: "100%", marginTop: 8 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontSize: 10, color: "#64748b", fontWeight: "bold", textTransform: "uppercase" }}>Full Build Output (document.log)</span>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(compileLog);
+                          showToast("Logs copied to clipboard!");
+                        }}
+                        style={{
+                          background: "transparent",
+                          border: "none",
+                          color: "var(--primary-solid)",
+                          fontSize: 11,
+                          cursor: "pointer",
+                          padding: 0,
+                        }}
+                      >
+                        Copy Log
+                      </button>
+                    </div>
+                    <pre style={{
+                      fontSize: 11,
+                      color: "#94a3b8",
+                      background: "#09090b",
+                      border: "1px solid rgba(255,255,255,0.03)",
+                      borderRadius: 6,
+                      padding: 12,
+                      maxHeight: 300,
+                      overflow: "auto",
+                      whiteSpace: "pre",
+                      wordBreak: "normal",
+                      margin: 0,
+                      fontFamily: "Fira Code, JetBrains Mono, monospace",
+                      lineHeight: 1.5,
+                    }}>
+                      {compileLog}
+                    </pre>
+                  </div>
+                )}
               </div>
             )}
 

@@ -1,8 +1,8 @@
-# LaTeX Studio — Local LaTeX-to-PDF App
+# TeXForge — Local LaTeX-to-PDF App
 
 A fully local, offline LaTeX editor with live PDF preview, syntax highlighting, auto-detection of missing packages, and support for Bengali, math, chemistry, physics, and more.
 
-![LaTeX Studio](https://img.shields.io/badge/LaTeX-Studio-purple)
+![TeXForge](https://img.shields.io/badge/TeXForge-purple)
 
 ---
 
@@ -70,7 +70,7 @@ node server.js
 You should see:
 ```
 ╔══════════════════════════════════════════════════╗
-║           LaTeX Studio - Local Server            ║
+║               TeXForge - Local Server            ║
 ║   Server running on http://localhost:2345        ║
 ╚══════════════════════════════════════════════════╝
   ✓ pdflatex found

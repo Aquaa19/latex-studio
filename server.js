@@ -50,6 +50,27 @@ function parseSyncTeX(synctexGzPath) {
 }
 
 const isWindows = os.platform() === "win32";
+
+// Auto-detect common MiKTeX / TeX Live paths on Windows in case the terminal PATH hasn't refreshed yet
+if (isWindows) {
+  const commonTexPaths = [
+    path.join(os.homedir(), "AppData", "Local", "Programs", "MiKTeX", "miktex", "bin", "x64"),
+    path.join(os.homedir(), "AppData", "Local", "Programs", "MiKTeX", "bin"),
+    "C:\\Program Files\\MiKTeX\\miktex\\bin\\x64",
+    "C:\\Program Files\\MiKTeX 2.9\\miktex\\bin\\x64",
+    "C:\\Program Files (x86)\\MiKTeX\\miktex\\bin",
+    "C:\\Program Files (x86)\\MiKTeX 2.9\\miktex\\bin",
+    "C:\\texlive\\2026\\bin\\windows",
+    "C:\\texlive\\2025\\bin\\windows",
+    "C:\\texlive\\2024\\bin\\windows"
+  ];
+  for (const p of commonTexPaths) {
+    if (fs.existsSync(p) && !process.env.PATH.toLowerCase().includes(p.toLowerCase())) {
+      process.env.PATH = `${p};${process.env.PATH}`;
+    }
+  }
+}
+
 const findCmd = isWindows ? "where" : "which";
 const PORT = process.env.PORT || 2345;
 
@@ -247,7 +268,13 @@ const server = http.createServer((req, res) => {
         console.log(`[${new Date().toISOString()}] Compiling LaTeX with ${engine || "pdflatex"}...`);
         compileLaTeX(code, engine || "pdflatex", files || null, (err, pdfData, synctexData) => {
           if (err) {
-            console.log(`[${new Date().toISOString()}] LaTeX compilation failed`);
+            console.error(`\x1b[31m[${new Date().toISOString()}] LaTeX compilation failed using ${engine || "pdflatex"}:\x1b[0m`);
+            console.error(`\x1b[33mError Summary:\x1b[0m\n${err.error || "No explicit errors extracted."}`);
+            if (err.log) {
+              const logLines = err.log.split("\n");
+              const tail = logLines.slice(-15).join("\n");
+              console.error(`\x1b[90mLog Tail:\x1b[0m\n${tail}\n`);
+            }
             res.writeHead(422, { ...corsHeaders, "Content-Type": "application/json" });
             res.end(JSON.stringify(err));
           } else {
@@ -259,6 +286,7 @@ const server = http.createServer((req, res) => {
           }
         });
       } catch (e) {
+        console.error(`\x1b[31m[${new Date().toISOString()}] Request error: ${e.message}\x1b[0m`);
         res.writeHead(400, { ...corsHeaders, "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Invalid request: " + e.message }));
       }
@@ -282,7 +310,7 @@ const server = http.createServer((req, res) => {
         const result = await compileHTML(html);
 
         if (!result.success) {
-          console.log(`[${new Date().toISOString()}] HTML compilation failed: ${result.error}`);
+          console.error(`\x1b[31m[${new Date().toISOString()}] HTML compilation failed: ${result.error}\x1b[0m`);
           res.writeHead(422, { ...corsHeaders, "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: result.error }));
         } else {
@@ -292,6 +320,7 @@ const server = http.createServer((req, res) => {
           res.writeHead(200, { ...corsHeaders, "Content-Type": "application/json" });
           res.end(JSON.stringify({ success: true, version: pdfVersion, size: result.data.length }));
         }
+
       } catch (e) {
         res.writeHead(400, { ...corsHeaders, "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Invalid request: " + e.message }));
@@ -300,6 +329,16 @@ const server = http.createServer((req, res) => {
   }
 
   // ---------- GET /pdf, /download, /health (unchanged) ----------
+  else if (req.method === "GET" && req.url === "/TeXForge.png") {
+    const logoPath = path.join(__dirname, "latex-studio", "public", "TeXForge.png");
+    if (fs.existsSync(logoPath)) {
+      res.writeHead(200, { ...corsHeaders, "Content-Type": "image/png" });
+      res.end(fs.readFileSync(logoPath));
+    } else {
+      res.writeHead(404, { ...corsHeaders, "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Logo not found" }));
+    }
+  }
   else if (req.method === "GET" && req.url.startsWith("/pdf")) {
     if (!latestPdf) {
       res.writeHead(404, { ...corsHeaders, "Content-Type": "application/json" });

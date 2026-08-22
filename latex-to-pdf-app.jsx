@@ -319,17 +319,60 @@ const HTML_TEMPLATES = {
 </html>`,
 };
 
-// ---------- Custom PDF Viewer (unchanged) ----------
+// ---------- Custom PDF Viewer (Vertical continuous scroll version) ----------
 function CustomPDFViewer({ url }) {
   const [numPages, setNumPages] = useState(null);
   const [pageNumber, setPageNumber] = useState(1);
   const [scale, setScale] = useState(1.0);
   const [error, setError] = useState(null);
+  const containerRef = useRef(null);
+  const visiblePagesRef = useRef({});
+  const observerRef = useRef(null);
+
+  // Setup observer to update visible page number during scroll
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          const pageNum = parseInt(entry.target.getAttribute("data-page"), 10);
+          if (entry.isIntersecting) {
+            visiblePagesRef.current[pageNum] = entry.intersectionRatio;
+          } else {
+            delete visiblePagesRef.current[pageNum];
+          }
+        });
+
+        const visible = Object.entries(visiblePagesRef.current);
+        if (visible.length > 0) {
+          visible.sort((a, b) => b[1] - a[1]);
+          setPageNumber(parseInt(visible[0][0], 10));
+        }
+      },
+      {
+        root: containerRef.current,
+        threshold: [0.0, 0.2, 0.5, 0.8],
+      }
+    );
+
+    observerRef.current = observer;
+
+    return () => {
+      observer.disconnect();
+      observerRef.current = null;
+    };
+  }, []);
+
+  const observePage = useCallback((el) => {
+    if (el && observerRef.current) {
+      observerRef.current.observe(el);
+    }
+  }, []);
 
   function onDocumentLoadSuccess({ numPages }) {
     setNumPages(numPages);
     setPageNumber(1);
     setError(null);
+    visiblePagesRef.current = {};
   }
 
   function onDocumentLoadError(err) {
@@ -363,21 +406,12 @@ function CustomPDFViewer({ url }) {
         display: "flex",
         justifyContent: "space-between",
         alignItems: "center",
+        flexShrink: 0,
       }}>
         <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-          <button
-            onClick={() => setPageNumber(p => Math.max(1, p - 1))}
-            disabled={pageNumber <= 1}
-            style={{...controlBtnStyle, opacity: pageNumber <= 1 ? 0.4 : 1}}
-          >◀</button>
-          <span style={{ fontSize: "12px", color: "#a0a0b0", minWidth: "80px", textAlign: "center" }}>
-            {pageNumber} / {numPages || '-'}
+          <span style={{ fontSize: "12px", color: "#a0a0b0", fontWeight: "500" }}>
+            Page {pageNumber} / {numPages || '-'}
           </span>
-          <button
-            onClick={() => setPageNumber(p => Math.min(numPages || p, p + 1))}
-            disabled={pageNumber >= (numPages || 1)}
-            style={{...controlBtnStyle, opacity: pageNumber >= (numPages || 1) ? 0.4 : 1}}
-          >▶</button>
         </div>
 
         <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
@@ -389,7 +423,10 @@ function CustomPDFViewer({ url }) {
         </div>
       </div>
 
-      <div style={{ flex: 1, overflow: "auto", padding: "20px", display: "flex", flexDirection: "column", alignItems: "center" }}>
+      <div 
+        ref={containerRef}
+        style={{ flex: 1, overflow: "auto", padding: "20px", display: "flex", flexDirection: "column", alignItems: "center" }}
+      >
         {error ? (
           <div style={{ color: "#f87171", textAlign: "center", marginTop: 40 }}>
             <div style={{ fontSize: 40, marginBottom: 10 }}>⚠️</div>
@@ -403,13 +440,38 @@ function CustomPDFViewer({ url }) {
             onLoadError={onDocumentLoadError}
             loading={<div style={{ color: "#7c3aed", marginTop: 40 }}>Initializing PDF View...</div>}
           >
-            <Page
-              pageNumber={pageNumber}
-              scale={scale}
-              renderAnnotationLayer={false}
-              renderTextLayer={true}
-              className="pdf-page-shadow"
-            />
+            {Array.from({ length: numPages || 0 }, (_, i) => i + 1).map((pageNum) => (
+              <div 
+                key={pageNum}
+                ref={observePage}
+                data-page={pageNum}
+                style={{ 
+                  position: "relative", 
+                  marginBottom: "24px",
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center"
+                }}
+              >
+                <div style={{
+                  alignSelf: "flex-start",
+                  fontSize: "11px",
+                  color: "#64748b",
+                  fontWeight: "600",
+                  marginBottom: "6px",
+                  userSelect: "none"
+                }}>
+                  Page {pageNum}
+                </div>
+                <Page
+                  pageNumber={pageNum}
+                  scale={scale}
+                  renderAnnotationLayer={false}
+                  renderTextLayer={true}
+                  className="pdf-page-shadow"
+                />
+              </div>
+            ))}
           </Document>
         )}
       </div>
@@ -531,6 +593,8 @@ export default function LaTeXApp() {
   const [pdfUrl, setPdfUrl] = useState(null);
   const [compiling, setCompiling] = useState(false);
   const [error, setError] = useState(null);
+  const [compileLog, setCompileLog] = useState(null);
+  const [showFullLog, setShowFullLog] = useState(false);
   const [suggestions, setSuggestions] = useState(null);
   const [activeTab, setActiveTab] = useState("editor");
   const [selectedTemplate, setSelectedTemplate] = useState("blank");
@@ -614,6 +678,8 @@ export default function LaTeXApp() {
 
     setCompiling(true);
     setError(null);
+    setCompileLog(null);
+    setShowFullLog(false);
     setPdfUrl(null);
     setCompiledWith(currentMode === 'latex' ? compileEngine : 'html');
 
@@ -643,7 +709,8 @@ export default function LaTeXApp() {
           setActiveTab("preview");
           showToast("Compiled successfully!");
         } else {
-          setError(data.error || data.log || "Compilation failed");
+          setError(data.error || "Compilation failed");
+          setCompileLog(data.log || null);
         }
         setCompiling(false);
       })
@@ -651,7 +718,8 @@ export default function LaTeXApp() {
         const msg = err.error || err.log || String(err);
         setError(msg.includes("Failed to fetch")
           ? `Could not connect to server. Ensure the backend is running at ${API_BASE_URL}.`
-          : msg);
+          : (err.error || "Compilation failed"));
+        setCompileLog(err.log || null);
         setCompiling(false);
       });
   }, [compileEngine]);
@@ -873,27 +941,20 @@ export default function LaTeXApp() {
       >
         {/* Logo */}
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div
+          <img
+            src="/TeXForge.png"
+            alt="TeXForge Logo"
             style={{
               width: 34,
               height: 34,
               borderRadius: 10,
-              background: "linear-gradient(135deg, #7c3aed, #a855f7)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontSize: 15,
-              fontWeight: 800,
-              color: "#fff",
-              letterSpacing: -1,
-              boxShadow: "0 0 20px rgba(124,58,237,0.3)",
+              objectFit: "cover",
+              boxShadow: "0 0 15px rgba(124,58,237,0.2)"
             }}
-          >
-            Lx
-          </div>
+          />
           <div>
             <h1 style={{ fontSize: 15, fontWeight: 700, margin: 0, color: "#f0f0f5", letterSpacing: -0.3 }}>
-              LaTeX Studio
+              TeXForge
             </h1>
             <span style={{ fontSize: 10, color: "#5a5a70", fontWeight: 400 }}>
               Local • Offline • Full-featured
@@ -1584,36 +1645,109 @@ export default function LaTeXApp() {
                 WebkitBackdropFilter: "blur(8px)",
                 borderBottom: "1px solid rgba(239,68,68,0.1)",
                 padding: 14,
-                maxHeight: 300,
+                maxHeight: showFullLog ? 450 : 300,
                 overflow: "auto",
+                display: "flex",
+                flexDirection: "column",
+                transition: "max-height 0.25s ease-in-out",
               }}
             >
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                <span style={{
-                  background: "rgba(239,68,68,0.1)",
-                  color: "#ef4444",
-                  padding: "2px 8px",
-                  borderRadius: 6,
-                  fontSize: 10,
-                  fontWeight: 600,
-                }}>
-                  ✕ COMPILATION ERROR
-                </span>
-                {compiledWith && (
-                  <span style={{ fontSize: 10, color: "#5a5a70" }}>engine: {compiledWith}</span>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{
+                    background: "rgba(239,68,68,0.1)",
+                    color: "#ef4444",
+                    padding: "2px 8px",
+                    borderRadius: 6,
+                    fontSize: 10,
+                    fontWeight: 600,
+                  }}>
+                    ✕ COMPILATION ERROR
+                  </span>
+                  {compiledWith && (
+                    <span style={{ fontSize: 10, color: "#5a5a70" }}>engine: {compiledWith}</span>
+                  )}
+                </div>
+                {compileLog && (
+                  <button
+                    onClick={() => setShowFullLog(!showFullLog)}
+                    style={{
+                      background: "rgba(255, 255, 255, 0.04)",
+                      border: "1px solid rgba(255, 255, 255, 0.08)",
+                      color: "#a0a0b0",
+                      padding: "4px 10px",
+                      borderRadius: "4px",
+                      fontSize: "11px",
+                      cursor: "pointer",
+                      fontWeight: "500",
+                      transition: "all 0.15s",
+                    }}
+                    onMouseEnter={(e) => {
+                      e.target.style.background = "rgba(255, 255, 255, 0.08)";
+                      e.target.style.color = "#cbd5e1";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.target.style.background = "rgba(255, 255, 255, 0.04)";
+                      e.target.style.color = "#a0a0b0";
+                    }}
+                  >
+                    {showFullLog ? "Hide Full Log" : "Show Full Log"}
+                  </button>
                 )}
               </div>
-              <pre style={{
-                fontSize: 11,
-                color: "#f87171",
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-word",
-                margin: 0,
-                fontFamily: "inherit",
-                lineHeight: 1.6,
-              }}>
-                {error}
-              </pre>
+
+              {!showFullLog ? (
+                <pre style={{
+                  fontSize: 11,
+                  color: "#f87171",
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                  margin: 0,
+                  fontFamily: "inherit",
+                  lineHeight: 1.6,
+                }}>
+                  {error}
+                </pre>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10, width: "100%", marginTop: 8 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontSize: 10, color: "#64748b", fontWeight: "bold", textTransform: "uppercase" }}>Full Build Output (document.log)</span>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(compileLog);
+                        showToast("Logs copied to clipboard!");
+                      }}
+                      style={{
+                        background: "transparent",
+                        border: "none",
+                        color: "var(--primary-solid)",
+                        fontSize: 11,
+                        cursor: "pointer",
+                        padding: 0,
+                      }}
+                    >
+                      Copy Log
+                    </button>
+                  </div>
+                  <pre style={{
+                    fontSize: 11,
+                    color: "#94a3b8",
+                    background: "#09090b",
+                    border: "1px solid rgba(255,255,255,0.03)",
+                    borderRadius: 6,
+                    padding: 12,
+                    maxHeight: 300,
+                    overflow: "auto",
+                    whiteSpace: "pre",
+                    wordBreak: "normal",
+                    margin: 0,
+                    fontFamily: "Fira Code, JetBrains Mono, monospace",
+                    lineHeight: 1.5,
+                  }}>
+                    {compileLog}
+                  </pre>
+                </div>
+              )}
             </div>
           )}
 
