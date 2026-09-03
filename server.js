@@ -513,17 +513,24 @@ const server = http.createServer((req, res) => {
     });
     res.end(latestPdf);
   }
-  else if (req.method === "GET" && req.url === "/download") {
+  else if (req.method === "GET" && req.url.startsWith("/download")) {
     if (!latestPdf) {
       res.writeHead(404, { ...corsHeaders, "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "No PDF compiled yet" }));
       return;
     }
+    const urlObj = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+    let customFilename = urlObj.searchParams.get("name") || "document.pdf";
+    if (!customFilename.toLowerCase().endsWith(".pdf")) {
+      customFilename += ".pdf";
+    }
+    const safeFilename = customFilename.replace(/[^a-zA-Z0-9_.-]/g, "_");
+
     res.writeHead(200, {
       ...corsHeaders,
       "Content-Type": "application/pdf",
       "Content-Length": latestPdf.length,
-      "Content-Disposition": "attachment; filename=document.pdf",
+      "Content-Disposition": `attachment; filename="${safeFilename}"`,
     });
     res.end(latestPdf);
   }
@@ -553,24 +560,58 @@ const server = http.createServer((req, res) => {
 });
 
 function startServer(port = PORT, cb) {
+  let currentPort = parseInt(port, 10) || 2345;
+  let attempts = 0;
+  const maxAttempts = 10;
+
   if (server.listening) {
-    if (cb) cb();
+    const addr = server.address();
+    const actualPort = addr && typeof addr === "object" ? addr.port : currentPort;
+    if (cb) cb(actualPort);
     return server;
   }
-  return server.listen(port, "0.0.0.0", () => {
-    console.log(`\n✅ LaTeX + HTML → PDF server running on http://0.0.0.0:${port}`);
-    console.log("Checking LaTeX engines...");
-    for (const eng of ["pdflatex", "xelatex", "lualatex"]) {
-      try { execSync(`${findCmd} ${eng}`, { stdio: "pipe" }); console.log(`  ✓ ${eng}`); }
-      catch { console.log(`  ✗ ${eng}`); }
+
+  function tryListen(p) {
+    server.removeAllListeners("error");
+
+    server.once("error", (err) => {
+      if (err.code === "EADDRINUSE") {
+        attempts++;
+        if (attempts < maxAttempts) {
+          console.warn(`[Server] Port ${p} is in use (EADDRINUSE). Trying port ${p + 1}...`);
+          tryListen(p + 1);
+        } else {
+          console.warn(`[Server] Ports ${currentPort} through ${p} in use. Connecting to existing instance on port ${currentPort}.`);
+          if (cb) cb(currentPort);
+        }
+      } else {
+        console.error("[Server Error]", err);
+      }
+    });
+
+    try {
+      server.listen(p, "0.0.0.0", () => {
+        const actualPort = server.address() ? server.address().port : p;
+        console.log(`\n✅ LaTeX + HTML → PDF server running on http://0.0.0.0:${actualPort}`);
+        console.log("Checking LaTeX engines...");
+        for (const eng of ["pdflatex", "xelatex", "lualatex"]) {
+          try { execSync(`${findCmd} ${eng}`, { stdio: "pipe" }); console.log(`  ✓ ${eng}`); }
+          catch { console.log(`  ✗ ${eng}`); }
+        }
+        if (isMiKTeX) {
+          console.log("  📦 MiKTeX: Auto package installation enabled (AutoInstall=1, -enable-installer)");
+        }
+        if (hasLocalFonts) console.log(`📁 Local fonts: ${PROJECT_FONTS_DIR} (copied for LaTeX)`);
+        console.log(`🖨️  HTML→PDF: Chromium / Puppeteer ready`);
+        if (cb) cb(actualPort);
+      });
+    } catch (e) {
+      if (cb) cb(currentPort);
     }
-    if (isMiKTeX) {
-      console.log("  📦 MiKTeX: Auto package installation enabled (AutoInstall=1, -enable-installer)");
-    }
-    if (hasLocalFonts) console.log(`📁 Local fonts: ${PROJECT_FONTS_DIR} (copied for LaTeX)`);
-    console.log(`🖨️  HTML→PDF: Puppeteer ready`);
-    if (cb) cb();
-  });
+  }
+
+  tryListen(currentPort);
+  return server;
 }
 
 if (require.main === module) {

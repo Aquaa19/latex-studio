@@ -167,7 +167,9 @@ Benzene:
 \\usepackage{tcolorbox}
 \\usepackage{enumitem}
 \\usepackage{fontspec}
-\\setmainfont{Noto Serif Bengali}
+\\setmainfont{Vrinda}[Script=Bengali]
+% Or use: \\setmainfont{Nirmala UI}[Script=Bengali]
+% Or custom fonts: \\setmainfont{Kalpurush}[Script=Bengali]
 
 \\title{\\textbf{\\Huge বাংলা নথি}}
 \\author{লেখকের নাম}
@@ -736,23 +738,48 @@ export default function LaTeXApp() {
   const [compileEngine, setCompileEngine] = useState("pdflatex");
   const [compiledWith, setCompiledWith] = useState("");
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [showNewFileModal, setShowNewFileModal] = useState(false);
+  const [newFileNameInput, setNewFileNameInput] = useState("");
+  const [showRenameModal, setShowRenameModal] = useState(false);
+  const [renameTargetFile, setRenameTargetFile] = useState(null);
+  const [renameFileInput, setRenameFileInput] = useState("");
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleteTargetFile, setDeleteTargetFile] = useState(null);
   const [toastMessage, setToastMessage] = useState(null);
   const [synctexData, setSynctexData] = useState(null);
-  const [apiUrlState, setApiUrlState] = useState(import.meta.env.VITE_API_BASE_URL || "http://localhost:2345");
+  const [serverOnline, setServerOnline] = useState(false);
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const dragCounterRef = useRef(0);
+  const [apiUrlState, setApiUrlState] = useState(() => {
+    if (typeof window !== "undefined" && window.location.origin && window.location.origin.startsWith("http")) {
+      return window.location.origin;
+    }
+    return import.meta.env.VITE_API_BASE_URL || "http://localhost:2345";
+  });
 
   useEffect(() => {
-    const fallbackUrl = import.meta.env.VITE_API_BASE_URL || "https://latex-studio.onrender.com";
-    fetch("http://localhost:2345/health", { mode: "cors" })
-      .then(res => {
-        if (res.ok) {
-          setApiUrlState("http://localhost:2345");
-        } else {
-          setApiUrlState(fallbackUrl);
-        }
-      })
-      .catch(() => {
-        setApiUrlState(fallbackUrl);
-      });
+    const currentOrigin = (typeof window !== "undefined" && window.location.origin && window.location.origin.startsWith("http"))
+      ? window.location.origin
+      : "http://localhost:2345";
+
+    const verifyServerHealth = () => {
+      fetch(`${currentOrigin}/health`, { mode: "cors" })
+        .then(res => {
+          if (res.ok) {
+            setApiUrlState(currentOrigin);
+            setServerOnline(true);
+          } else {
+            setServerOnline(false);
+          }
+        })
+        .catch(() => {
+          setServerOnline(false);
+        });
+    };
+
+    verifyServerHealth();
+    const timer = setInterval(verifyServerHealth, 8000);
+    return () => clearInterval(timer);
   }, []);
 
   const mainContainerRef = useRef(null);
@@ -824,6 +851,162 @@ export default function LaTeXApp() {
     setTimeout(() => setToastMessage(null), 2500);
   };
 
+  // Drag and Drop File Processor
+  const processDroppedFiles = useCallback((fileList) => {
+    if (!fileList || fileList.length === 0) return;
+
+    const filesArray = Array.from(fileList);
+    const isImageOrBinary = (file) => {
+      const name = (file.name || "").toLowerCase();
+      return (
+        (file.type && file.type.startsWith("image/")) ||
+        name.endsWith(".png") ||
+        name.endsWith(".jpg") ||
+        name.endsWith(".jpeg") ||
+        name.endsWith(".gif") ||
+        name.endsWith(".svg") ||
+        name.endsWith(".bmp") ||
+        name.endsWith(".webp") ||
+        name.endsWith(".pdf") ||
+        name.endsWith(".eps") ||
+        name.endsWith(".ico")
+      );
+    };
+
+    // If in single-file mode and only 1 text file was dropped:
+    if (!projectModeRef.current && filesArray.length === 1 && !isImageOrBinary(filesArray[0])) {
+      const file = filesArray[0];
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const text = e.target.result;
+        setBasicCode(text);
+        codeRef.current = text;
+        showToast(`Loaded "${file.name}" into editor`);
+      };
+      reader.readAsText(file, "UTF-8");
+      return;
+    }
+
+    // Read all files asynchronously
+    const readPromises = filesArray.map((file) => {
+      return new Promise((resolve) => {
+        const binary = isImageOrBinary(file);
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          resolve({
+            name: file.name,
+            content: e.target.result,
+            isBinary: binary,
+          });
+        };
+        if (binary) {
+          reader.readAsDataURL(file);
+        } else {
+          reader.readAsText(file, "UTF-8");
+        }
+      });
+    });
+
+    Promise.all(readPromises).then((loadedFiles) => {
+      if (!projectModeRef.current) {
+        setProjectMode(true);
+        projectModeRef.current = true;
+      }
+
+      setProjectFiles((prev) => {
+        let updated = [...prev];
+        let firstNewId = null;
+
+        for (const f of loadedFiles) {
+          const existingIdx = updated.findIndex(
+            (p) => p.name.toLowerCase() === f.name.toLowerCase()
+          );
+          if (existingIdx >= 0) {
+            updated[existingIdx] = {
+              ...updated[existingIdx],
+              content: f.content,
+              isBinary: f.isBinary,
+            };
+            if (!firstNewId && !f.isBinary) {
+              firstNewId = updated[existingIdx].id;
+            }
+          } else {
+            const newId = (Date.now() + Math.floor(Math.random() * 10000)).toString();
+            updated.push({
+              id: newId,
+              name: f.name,
+              content: f.content,
+              isBinary: f.isBinary,
+            });
+            if (!firstNewId && !f.isBinary) {
+              firstNewId = newId;
+            }
+          }
+        }
+
+        if (firstNewId) {
+          setActiveFileId(firstNewId);
+        }
+        return updated;
+      });
+
+      showToast(`Imported ${loadedFiles.length} file${loadedFiles.length > 1 ? "s" : ""} via Drag & Drop!`);
+    });
+  }, []);
+
+  // Global Drag and Drop event listeners
+  useEffect(() => {
+    const handleDragEnter = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dragCounterRef.current += 1;
+      if (e.dataTransfer && e.dataTransfer.types && Array.from(e.dataTransfer.types).includes("Files")) {
+        setIsDraggingOver(true);
+      }
+    };
+
+    const handleDragOver = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) {
+        e.dataTransfer.dropEffect = "copy";
+      }
+    };
+
+    const handleDragLeave = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dragCounterRef.current -= 1;
+      if (dragCounterRef.current <= 0) {
+        dragCounterRef.current = 0;
+        setIsDraggingOver(false);
+      }
+    };
+
+    const handleDrop = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dragCounterRef.current = 0;
+      setIsDraggingOver(false);
+
+      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        processDroppedFiles(e.dataTransfer.files);
+      }
+    };
+
+    window.addEventListener("dragenter", handleDragEnter);
+    window.addEventListener("dragover", handleDragOver);
+    window.addEventListener("dragleave", handleDragLeave);
+    window.addEventListener("drop", handleDrop);
+
+    return () => {
+      window.removeEventListener("dragenter", handleDragEnter);
+      window.removeEventListener("dragover", handleDragOver);
+      window.removeEventListener("dragleave", handleDragLeave);
+      window.removeEventListener("drop", handleDrop);
+    };
+  }, [processDroppedFiles]);
+
   // Clear editor
   const clearEditor = () => {
     setCode("");
@@ -888,13 +1071,10 @@ export default function LaTeXApp() {
     setPdfUrl(null);
     setCompiledWith(currentMode === 'latex' ? currentEngine : 'html');
 
-    const activeF = files.find(f => f.id === actId) || files[0];
-    const rootId = rootFileIdRef.current;
-    const mainF = files.find(f => f.id === rootId) || files.find(f => f.name === "main.tex") || activeF;
-
-    const compileCode = isProj ? mainF.content : codeRef.current;
+    const activeF = files.find(f => f.id === actId) || files.find(f => !f.isBinary) || files[0];
+    const compileCode = isProj ? activeF.content : codeRef.current;
     const filesData = isProj
-      ? files.filter(f => f.id !== mainF.id).map(f => ({ path: f.name, content: f.content }))
+      ? files.filter(f => f.id !== activeF.id).map(f => ({ path: f.name, content: f.content }))
       : null;
 
     const url = currentMode === 'latex'
@@ -910,6 +1090,7 @@ export default function LaTeXApp() {
       body,
     })
       .then((res) => {
+        setServerOnline(true);
         if (!res.ok) {
           return res.json().then((err) => { throw err; });
         }
@@ -1137,11 +1318,12 @@ export default function LaTeXApp() {
   };
 
   const handleImageUpload = (e) => {
-    const file = e.target.files[0];
+    const file = e.target.files?.[0];
     if (!file) return;
 
     if (projectFiles.some(f => f.name.toLowerCase() === file.name.toLowerCase())) {
-      showToast("File already exists!");
+      showToast("File already exists in project!");
+      e.target.value = "";
       return;
     }
 
@@ -1158,10 +1340,11 @@ export default function LaTeXApp() {
       showToast(`Uploaded image: ${file.name}`);
     };
     reader.readAsDataURL(file);
+    e.target.value = "";
   };
 
   const handleImportFile = (e) => {
-    const file = e.target.files[0];
+    const file = e.target.files?.[0];
     if (!file) return;
 
     const reader = new FileReader();
@@ -1169,7 +1352,7 @@ export default function LaTeXApp() {
       const content = event.target.result;
       if (projectMode) {
         if (projectFiles.some(f => f.name.toLowerCase() === file.name.toLowerCase())) {
-          showToast("File already exists!");
+          showToast("File already exists in project!");
           return;
         }
         const newId = Date.now().toString();
@@ -1188,6 +1371,59 @@ export default function LaTeXApp() {
       }
     };
     reader.readAsText(file);
+    e.target.value = "";
+  };
+
+  const handleCreateNewFile = () => {
+    if (!newFileNameInput || !newFileNameInput.trim()) return;
+    const name = newFileNameInput.trim();
+    if (projectFiles.some(f => f.name.toLowerCase() === name.toLowerCase())) {
+      showToast("File with this name already exists in project!");
+      return;
+    }
+    const newId = Date.now().toString();
+    const defaultContent = name.endsWith(".bib")
+      ? "% Bibliography database\n"
+      : name.endsWith(".sty") || name.endsWith(".cls")
+      ? "% LaTeX package / class\n"
+      : `% ${name}\n`;
+    setProjectFiles(prev => [...prev, { id: newId, name, content: defaultContent, isBinary: false }]);
+    setActiveFileId(newId);
+    setShowNewFileModal(false);
+    setNewFileNameInput("");
+    showToast(`Created file: ${name}`);
+  };
+
+  const handleRenameFile = () => {
+    if (!renameTargetFile || !renameFileInput || !renameFileInput.trim()) return;
+    const newName = renameFileInput.trim();
+    if (projectFiles.some(f => f.id !== renameTargetFile.id && f.name.toLowerCase() === newName.toLowerCase())) {
+      showToast("File with this name already exists in project!");
+      return;
+    }
+    setProjectFiles(prev => prev.map(f => f.id === renameTargetFile.id ? { ...f, name: newName } : f));
+    setShowRenameModal(false);
+    setRenameTargetFile(null);
+    setRenameFileInput("");
+    showToast(`Renamed file to: ${newName}`);
+  };
+
+  const handleDeleteFile = () => {
+    if (!deleteTargetFile) return;
+    const file = deleteTargetFile;
+    const newFiles = projectFiles.filter(f => f.id !== file.id);
+    setProjectFiles(newFiles);
+    if (rootFileId === file.id) {
+      const fallbackRoot = newFiles.find(f => !f.isBinary) || newFiles[0];
+      if (fallbackRoot) setRootFileId(fallbackRoot.id);
+    }
+    if (activeFileId === file.id) {
+      const fallbackActive = newFiles[0];
+      if (fallbackActive) setActiveFileId(fallbackActive.id);
+    }
+    setShowDeleteConfirm(false);
+    setDeleteTargetFile(null);
+    showToast(`Deleted: ${file.name}`);
   };
 
   // ---------- Mode switch ----------
@@ -1258,6 +1494,112 @@ export default function LaTeXApp() {
         overflow: "hidden",
       }}
     >
+      {/* ========== DRAG & DROP FULLSCREEN OVERLAY ========== */}
+      {isDraggingOver && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 9999,
+            background: "rgba(10, 11, 20, 0.88)",
+            backdropFilter: "blur(16px)",
+            WebkitBackdropFilter: "blur(16px)",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            border: "3px dashed rgba(59, 130, 246, 0.75)",
+            margin: "12px",
+            borderRadius: "16px",
+            boxShadow: "0 0 60px rgba(59, 130, 246, 0.35), inset 0 0 40px rgba(59, 130, 246, 0.15)",
+            pointerEvents: "none",
+            animation: "fadeIn 0.2s ease-out",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: 16,
+              textAlign: "center",
+              maxWidth: 480,
+              padding: 32,
+            }}
+          >
+            <div
+              style={{
+                width: 80,
+                height: 80,
+                borderRadius: 24,
+                background: "linear-gradient(135deg, rgba(59, 130, 246, 0.25), rgba(139, 92, 246, 0.25))",
+                border: "1px solid rgba(59, 130, 246, 0.4)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: 38,
+                boxShadow: "0 10px 30px rgba(59, 130, 246, 0.3)",
+              }}
+            >
+              📥
+            </div>
+
+            <div>
+              <h2
+                style={{
+                  margin: "0 0 8px",
+                  fontSize: 22,
+                  fontWeight: 700,
+                  color: "#fff",
+                  fontFamily: "'Outfit', sans-serif",
+                }}
+              >
+                Drop Files Here
+              </h2>
+              <p
+                style={{
+                  margin: 0,
+                  fontSize: 14,
+                  color: "#94a3b8",
+                  lineHeight: 1.6,
+                }}
+              >
+                Drop <strong style={{ color: "#60a5fa" }}>.tex, .bib, .sty, .cls</strong>, images, or assets from File Explorer to import into your project.
+              </p>
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                gap: 8,
+                flexWrap: "wrap",
+                justifyContent: "center",
+                marginTop: 4,
+              }}
+            >
+              {["📄 LaTeX Documents", "📚 Bibliographies (.bib)", "🖼️ Images (.png, .jpg, .svg)", "⚙️ Packages (.sty)"].map(
+                (tag) => (
+                  <span
+                    key={tag}
+                    style={{
+                      fontSize: 11,
+                      background: "rgba(255, 255, 255, 0.05)",
+                      border: "1px solid rgba(255, 255, 255, 0.1)",
+                      color: "#cbd5e1",
+                      padding: "4px 10px",
+                      borderRadius: 20,
+                      fontWeight: 500,
+                    }}
+                  >
+                    {tag}
+                  </span>
+                )
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ========== REDESIGNED PREMIUM TOP NAVBAR ========== */}
       <header
         className="glass-card"
@@ -1301,10 +1643,12 @@ export default function LaTeXApp() {
           </div>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 8, background: "rgba(255, 255, 255, 0.02)", border: "1px solid rgba(255, 255, 255, 0.04)", padding: "5px 12px", borderRadius: 20 }}>
-          <span className="status-pulse-dot" style={{ width: 7, height: 7, borderRadius: "50%", background: "#10b981" }} />
-          <span style={{ fontSize: 11, color: "#94a3b8", fontWeight: 500 }}>Render Node Online</span>
-        </div>
+        {serverOnline && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, background: "rgba(16, 185, 129, 0.08)", border: "1px solid rgba(16, 185, 129, 0.2)", padding: "5px 12px", borderRadius: 20 }}>
+            <span className="status-pulse-dot" style={{ width: 7, height: 7, borderRadius: "50%", background: "#10b981" }} />
+            <span style={{ fontSize: 11, color: "#10b981", fontWeight: 500 }}>Backend Server Active</span>
+          </div>
+        )}
 
         {/* Global actions */}
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -1377,8 +1721,16 @@ export default function LaTeXApp() {
                 <span>↗ Open</span>
               </a>
               <a
-                href={`${apiUrlState}/download`}
-                download="document.pdf"
+                href={`${apiUrlState}/download?name=${encodeURIComponent(
+                  projectMode
+                    ? ((projectFiles.find(f => f.id === activeFileId) || projectFiles[0])?.name?.replace(/\.[^/.]+$/, "") || "document") + ".pdf"
+                    : "document.pdf"
+                )}`}
+                download={
+                  projectMode
+                    ? ((projectFiles.find(f => f.id === activeFileId) || projectFiles[0])?.name?.replace(/\.[^/.]+$/, "") || "document") + ".pdf"
+                    : "document.pdf"
+                }
                 style={{
                   background: "rgba(16, 185, 129, 0.12)",
                   border: "1px solid rgba(16, 185, 129, 0.25)",
@@ -1392,6 +1744,11 @@ export default function LaTeXApp() {
                   alignItems: "center",
                   gap: 6,
                 }}
+                title={
+                  projectMode
+                    ? `Download ${((projectFiles.find(f => f.id === activeFileId) || projectFiles[0])?.name?.replace(/\.[^/.]+$/, "") || "document")}.pdf`
+                    : "Download document.pdf"
+                }
               >
                 <span>⬇ Download</span>
               </a>
@@ -1503,7 +1860,265 @@ export default function LaTeXApp() {
         </div>
       )}
 
-      {/* ========== TOAST NOTIFICATION ========== */}
+      {/* ========== NEW FILE MODAL ========== */}
+      {showNewFileModal && (
+        <div style={{
+          position: "fixed",
+          inset: 0,
+          background: "rgba(0,0,0,0.75)",
+          backdropFilter: "blur(12px)",
+          WebkitBackdropFilter: "blur(12px)",
+          zIndex: 200,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}>
+          <div className="glass-card" style={{
+            padding: "28px",
+            width: "90%",
+            maxWidth: 420,
+            textAlign: "left",
+            boxShadow: "0 20px 40px rgba(0,0,0,0.6)",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+              <span style={{ fontSize: 24 }}>📄</span>
+              <div>
+                <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: "#fff" }}>
+                  Create New File
+                </h3>
+                <span style={{ fontSize: 11, color: "#94a3b8" }}>
+                  Add a new document, bibliography, or style sheet
+                </span>
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 20 }}>
+              <label style={{ display: "block", fontSize: 12, color: "#cbd5e1", fontWeight: 500, marginBottom: 6 }}>
+                File Name:
+              </label>
+              <input
+                type="text"
+                autoFocus
+                value={newFileNameInput}
+                onChange={(e) => setNewFileNameInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleCreateNewFile();
+                  if (e.key === "Escape") setShowNewFileModal(false);
+                }}
+                placeholder="e.g. chapter1.tex, references.bib, custom.sty"
+                style={{
+                  width: "100%",
+                  boxSizing: "border-box",
+                  background: "rgba(0,0,0,0.4)",
+                  border: "1px solid rgba(255,255,255,0.15)",
+                  borderRadius: 8,
+                  padding: "10px 14px",
+                  color: "#fff",
+                  fontSize: 13,
+                  outline: "none",
+                }}
+              />
+            </div>
+
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <button
+                onClick={() => {
+                  setShowNewFileModal(false);
+                  setNewFileNameInput("");
+                }}
+                className="glass-btn"
+                style={{
+                  padding: "8px 18px",
+                  borderRadius: 8,
+                  fontWeight: 600,
+                  fontSize: 12,
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreateNewFile}
+                disabled={!newFileNameInput.trim()}
+                style={{
+                  background: newFileNameInput.trim() ? "linear-gradient(135deg, #3b82f6, #8b5cf6)" : "rgba(255,255,255,0.1)",
+                  border: "none",
+                  color: "#fff",
+                  padding: "8px 20px",
+                  borderRadius: 8,
+                  fontSize: 12,
+                  cursor: newFileNameInput.trim() ? "pointer" : "not-allowed",
+                  fontWeight: 600,
+                  transition: "all 0.2s",
+                }}
+              >
+                Create File
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========== RENAME FILE MODAL ========== */}
+      {showRenameModal && (
+        <div style={{
+          position: "fixed",
+          inset: 0,
+          background: "rgba(0,0,0,0.75)",
+          backdropFilter: "blur(12px)",
+          WebkitBackdropFilter: "blur(12px)",
+          zIndex: 200,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}>
+          <div className="glass-card" style={{
+            padding: "28px",
+            width: "90%",
+            maxWidth: 420,
+            textAlign: "left",
+            boxShadow: "0 20px 40px rgba(0,0,0,0.6)",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+              <span style={{ fontSize: 24 }}>✏️</span>
+              <div>
+                <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: "#fff" }}>
+                  Rename File
+                </h3>
+                <span style={{ fontSize: 11, color: "#94a3b8" }}>
+                  Current name: {renameTargetFile?.name}
+                </span>
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 20 }}>
+              <label style={{ display: "block", fontSize: 12, color: "#cbd5e1", fontWeight: 500, marginBottom: 6 }}>
+                New File Name:
+              </label>
+              <input
+                type="text"
+                autoFocus
+                value={renameFileInput}
+                onChange={(e) => setRenameFileInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleRenameFile();
+                  if (e.key === "Escape") setShowRenameModal(false);
+                }}
+                style={{
+                  width: "100%",
+                  boxSizing: "border-box",
+                  background: "rgba(0,0,0,0.4)",
+                  border: "1px solid rgba(255,255,255,0.15)",
+                  borderRadius: 8,
+                  padding: "10px 14px",
+                  color: "#fff",
+                  fontSize: 13,
+                  outline: "none",
+                }}
+              />
+            </div>
+
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <button
+                onClick={() => {
+                  setShowRenameModal(false);
+                  setRenameTargetFile(null);
+                  setRenameFileInput("");
+                }}
+                className="glass-btn"
+                style={{
+                  padding: "8px 18px",
+                  borderRadius: 8,
+                  fontWeight: 600,
+                  fontSize: 12,
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleRenameFile}
+                disabled={!renameFileInput.trim() || renameFileInput.trim() === renameTargetFile?.name}
+                style={{
+                  background: renameFileInput.trim() && renameFileInput.trim() !== renameTargetFile?.name
+                    ? "linear-gradient(135deg, #3b82f6, #8b5cf6)"
+                    : "rgba(255,255,255,0.1)",
+                  border: "none",
+                  color: "#fff",
+                  padding: "8px 20px",
+                  borderRadius: 8,
+                  fontSize: 12,
+                  cursor: renameFileInput.trim() && renameFileInput.trim() !== renameTargetFile?.name ? "pointer" : "not-allowed",
+                  fontWeight: 600,
+                  transition: "all 0.2s",
+                }}
+              >
+                Rename
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========== DELETE FILE CONFIRM MODAL ========== */}
+      {showDeleteConfirm && (
+        <div style={{
+          position: "fixed",
+          inset: 0,
+          background: "rgba(0,0,0,0.75)",
+          backdropFilter: "blur(12px)",
+          WebkitBackdropFilter: "blur(12px)",
+          zIndex: 200,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}>
+          <div className="glass-card" style={{
+            padding: "28px",
+            maxWidth: 380,
+            textAlign: "center",
+          }}>
+            <div style={{ fontSize: 36, marginBottom: 12 }}>🗑️</div>
+            <h3 style={{ margin: "0 0 8px", fontSize: 18, fontWeight: 700, color: "#fff" }}>
+              Delete File?
+            </h3>
+            <p style={{ margin: "0 0 24px", fontSize: 13, color: "#94a3b8", lineHeight: 1.6 }}>
+              Are you sure you want to delete <strong style={{ color: "#f87171" }}>{deleteTargetFile?.name}</strong> from this project?
+            </p>
+            <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
+              <button
+                onClick={() => {
+                  setShowDeleteConfirm(false);
+                  setDeleteTargetFile(null);
+                }}
+                className="glass-btn"
+                style={{
+                  padding: "8px 22px",
+                  borderRadius: 10,
+                  fontWeight: 600,
+                  fontSize: 13,
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteFile}
+                style={{
+                  background: "rgba(239, 68, 68, 0.15)",
+                  border: "1px solid rgba(239, 68, 68, 0.3)",
+                  color: "#ef4444",
+                  padding: "8px 22px",
+                  borderRadius: 10,
+                  fontSize: 13,
+                  cursor: "pointer",
+                  fontWeight: 600,
+                  transition: "all 0.2s",
+                }}
+              >
+                Delete File
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {toastMessage && (
         <div className="glass-card" style={{
           position: "fixed",
@@ -1733,46 +2348,71 @@ export default function LaTeXApp() {
                 <span style={{ fontSize: 10, color: "var(--primary-solid)", fontWeight: 700, textTransform: "uppercase", letterSpacing: 1 }}>
                   Project Files
                 </span>
-                <div style={{ display: "flex", gap: 4 }}>
-                  <button
-                    onClick={() => {
-                      const name = prompt("Enter file name (e.g., sections/intro.tex, references.bib):");
-                      if (name) {
-                        if (projectFiles.some(f => f.name.toLowerCase() === name.toLowerCase())) {
-                          showToast("File already exists!");
-                          return;
-                        }
-                        const newId = Date.now().toString();
-                        setProjectFiles(prev => [...prev, { id: newId, name, content: `% ${name}\n` }]);
-                        setActiveFileId(newId);
-                        showToast(`Created file: ${name}`);
-                      }
-                    }}
-                    className="glass-btn"
-                    style={{
-                      padding: "3px 6px",
-                      borderRadius: 4,
-                      fontSize: 9,
-                      fontWeight: 600,
-                    }}
-                  >
-                    + File
-                  </button>
+                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                  {/* Select and Import File from Disk */}
                   <label
                     className="glass-btn"
                     style={{
-                      padding: "3px 6px",
+                      padding: "3px 8px",
                       borderRadius: 4,
                       fontSize: 9,
                       fontWeight: 600,
                       cursor: "pointer",
-                      display: "inline-block",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 2,
                     }}
+                    title="Select and import an existing file from your computer (.tex, .bib, .sty, .cls, .txt, etc.)"
+                  >
+                    + File
+                    <input
+                      type="file"
+                      accept=".tex,.bib,.sty,.cls,.txt,.csv,.md,.json,.dtx,.ins,text/*"
+                      onChange={handleImportFile}
+                      style={{ display: "none" }}
+                    />
+                  </label>
+
+                  {/* Create New Blank File */}
+                  <button
+                    onClick={() => {
+                      setNewFileNameInput("");
+                      setShowNewFileModal(true);
+                    }}
+                    className="glass-btn"
+                    style={{
+                      padding: "3px 8px",
+                      borderRadius: 4,
+                      fontSize: 9,
+                      fontWeight: 600,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 2,
+                    }}
+                    title="Create a new blank file in the project"
+                  >
+                    + New
+                  </button>
+
+                  {/* Upload Image */}
+                  <label
+                    className="glass-btn"
+                    style={{
+                      padding: "3px 8px",
+                      borderRadius: 4,
+                      fontSize: 9,
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 2,
+                    }}
+                    title="Upload an image file (.png, .jpg, .svg, .pdf)"
                   >
                     + Image
                     <input
                       type="file"
-                      accept="image/*"
+                      accept="image/*,.png,.jpg,.jpeg,.svg,.pdf,.eps"
                       onChange={handleImageUpload}
                       style={{ display: "none" }}
                     />
@@ -1783,81 +2423,67 @@ export default function LaTeXApp() {
                 {projectFiles.map((file) => (
                   <div
                     key={file.id}
+                    onClick={() => {
+                      setActiveFileId(file.id);
+                      if (editorRef.current && monacoRef.current) {
+                        const model = editorRef.current.getModel();
+                        monacoRef.current.editor.setModelMarkers(model, "latex-diagnostics", []);
+                      }
+                    }}
                     style={{
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "space-between",
-                      background: activeFileId === file.id ? "rgba(59, 130, 246, 0.08)" : "transparent",
+                      background: activeFileId === file.id ? "rgba(59, 130, 246, 0.12)" : "rgba(255, 255, 255, 0.02)",
                       borderRadius: 6,
-                      padding: "4px 8px",
-                      border: "1px solid " + (activeFileId === file.id ? "rgba(59, 130, 246, 0.25)" : "transparent"),
+                      padding: "5px 8px",
+                      border: "1px solid " + (activeFileId === file.id ? "rgba(59, 130, 246, 0.4)" : "rgba(255, 255, 255, 0.04)"),
+                      cursor: "pointer",
+                      transition: "all 0.15s ease",
                     }}
                   >
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1, overflow: "hidden" }}>
-                      {!file.isBinary ? (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (file.id !== rootFileId) {
-                              setRootFileId(file.id);
-                              showToast(`Set "${file.name}" as Main Document`);
-                            }
-                          }}
-                          style={{
-                            background: "transparent",
-                            border: "none",
-                            cursor: file.id === rootFileId ? "default" : "pointer",
-                            fontSize: 12,
-                            padding: 0,
-                            display: "flex",
-                            alignItems: "center",
-                            opacity: file.id === rootFileId ? 1 : 0.25,
-                            filter: file.id === rootFileId ? "none" : "grayscale(100%)",
-                            transition: "all 0.2s",
-                          }}
-                          title={file.id === rootFileId ? "Main Document" : "Set as Main Document"}
-                        >
-                          👑
-                        </button>
-                      ) : (
-                        <span style={{ fontSize: 12, display: "flex", alignItems: "center" }}>🖼️</span>
-                      )}
+                    <div style={{ display: "flex", alignItems: "center", gap: 7, flex: 1, overflow: "hidden" }}>
+                      <span style={{ fontSize: 13, display: "flex", alignItems: "center", opacity: activeFileId === file.id ? 1 : 0.6 }}>
+                        {file.isBinary ? "🖼️" : "📄"}
+                      </span>
 
-                      <button
-                        onClick={() => {
-                          setActiveFileId(file.id);
-                          if (editorRef.current && monacoRef.current) {
-                            const model = editorRef.current.getModel();
-                            monacoRef.current.editor.setModelMarkers(model, "latex-diagnostics", []);
-                          }
-                        }}
+                      <span
                         style={{
-                          background: "transparent",
-                          border: "none",
-                          color: activeFileId === file.id ? "var(--primary-solid)" : "#94a3b8",
+                          color: activeFileId === file.id ? "#ffffff" : "#94a3b8",
                           fontSize: 12,
                           fontWeight: activeFileId === file.id ? 600 : 400,
-                          cursor: "pointer",
                           textAlign: "left",
                           flex: 1,
                           textOverflow: "ellipsis",
                           overflow: "hidden",
                           whiteSpace: "nowrap",
-                          padding: "2px 0",
                         }}
                       >
                         {file.name}
-                      </button>
+                      </span>
+
+                      {activeFileId === file.id && (
+                        <span style={{
+                          fontSize: 9,
+                          background: "rgba(59, 130, 246, 0.25)",
+                          color: "#60a5fa",
+                          padding: "1px 5px",
+                          borderRadius: 4,
+                          fontWeight: 600,
+                          letterSpacing: 0.3,
+                          textTransform: "uppercase"
+                        }}>
+                          Target
+                        </span>
+                      )}
                     </div>
                     <div style={{ display: "flex", gap: 3, alignItems: "center" }}>
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          const newName = prompt(`Enter new name for "${file.name}":`, file.name);
-                          if (newName && newName.trim() !== "") {
-                            setProjectFiles(prev => prev.map(f => f.id === file.id ? { ...f, name: newName.trim() } : f));
-                            showToast(`Renamed file to ${newName}`);
-                          }
+                          setRenameTargetFile(file);
+                          setRenameFileInput(file.name);
+                          setShowRenameModal(true);
                         }}
                         style={{
                           background: "transparent",
@@ -1874,19 +2500,8 @@ export default function LaTeXApp() {
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          if (confirm(`Delete file "${file.name}"?`)) {
-                            const newFiles = projectFiles.filter(f => f.id !== file.id);
-                            setProjectFiles(newFiles);
-                            if (rootFileId === file.id) {
-                              const fallbackRoot = newFiles.find(f => !f.isBinary) || newFiles[0];
-                              if (fallbackRoot) setRootFileId(fallbackRoot.id);
-                            }
-                            if (activeFileId === file.id) {
-                              const fallbackActive = newFiles[0];
-                              if (fallbackActive) setActiveFileId(fallbackActive.id);
-                            }
-                            showToast(`Deleted file: ${file.name}`);
-                          }
+                          setDeleteTargetFile(file);
+                          setShowDeleteConfirm(true);
                         }}
                         style={{
                           background: "transparent",

@@ -4,8 +4,8 @@ const fs = require("fs");
 
 let mainWindow = null;
 let serverInstance = null;
-const SERVER_PORT = 2345;
-const SERVER_URL = `http://127.0.0.1:${SERVER_PORT}`;
+const DEFAULT_PORT = 2345;
+let currentServerUrl = `http://127.0.0.1:${DEFAULT_PORT}`;
 
 // Prevent multiple instances of the app
 const gotTheLock = app.requestSingleInstanceLock();
@@ -21,9 +21,8 @@ if (!gotTheLock) {
 }
 
 function startInternalServer() {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     try {
-      // In-process server loading works across packaged asar and development environments
       let serverModule;
       try {
         serverModule = require("../server.js");
@@ -36,31 +35,34 @@ function startInternalServer() {
       }
 
       if (serverModule && typeof serverModule.startServer === "function") {
-        serverInstance = serverModule.startServer(SERVER_PORT, () => {
-          console.log(`[Electron] Internal server listening on ${SERVER_URL}`);
-          resolve();
+        serverInstance = serverModule.startServer(DEFAULT_PORT, (actualPort) => {
+          const port = actualPort || DEFAULT_PORT;
+          currentServerUrl = `http://127.0.0.1:${port}`;
+          console.log(`[Electron] Internal server ready at ${currentServerUrl}`);
+          resolve(currentServerUrl);
         });
       } else if (serverModule && serverModule.server) {
         serverInstance = serverModule.server;
         if (!serverInstance.listening) {
-          serverInstance.listen(SERVER_PORT, "0.0.0.0", () => {
-            console.log(`[Electron] Internal server listening on ${SERVER_URL}`);
-            resolve();
+          serverInstance.listen(DEFAULT_PORT, "0.0.0.0", () => {
+            currentServerUrl = `http://127.0.0.1:${DEFAULT_PORT}`;
+            console.log(`[Electron] Internal server ready at ${currentServerUrl}`);
+            resolve(currentServerUrl);
           });
         } else {
-          resolve();
+          resolve(currentServerUrl);
         }
       } else {
-        resolve();
+        resolve(currentServerUrl);
       }
     } catch (err) {
-      console.error("[Electron] Failed to start internal server:", err);
-      reject(err);
+      console.warn("[Electron] Embedded server start warning:", err.message);
+      resolve(currentServerUrl);
     }
   });
 }
 
-function createWindow() {
+function createWindow(urlToLoad = currentServerUrl) {
   let iconPath = path.join(__dirname, "..", "latex-studio", "public", "TeXForge.png");
   if (process.resourcesPath) {
     const candidate = path.join(process.resourcesPath, "latex-studio", "public", "TeXForge.png");
@@ -130,7 +132,7 @@ function createWindow() {
       submenu: [
         {
           label: "Open in External Browser",
-          click: () => shell.openExternal(SERVER_URL)
+          click: () => shell.openExternal(currentServerUrl)
         },
         {
           label: "About LaTeX Studio",
@@ -156,7 +158,7 @@ function createWindow() {
     return { action: "deny" };
   });
 
-  mainWindow.loadURL(SERVER_URL);
+  mainWindow.loadURL(urlToLoad);
 
   mainWindow.once("ready-to-show", () => {
     mainWindow.show();
@@ -166,7 +168,7 @@ function createWindow() {
     console.error(`[Electron] Page failed to load (${errorCode}): ${errorDescription}`);
     setTimeout(() => {
       if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.loadURL(SERVER_URL);
+        mainWindow.loadURL(currentServerUrl);
       }
     }, 1000);
   });
@@ -188,16 +190,12 @@ function stopServer() {
 }
 
 app.whenReady().then(async () => {
-  try {
-    await startInternalServer();
-  } catch (err) {
-    dialog.showErrorBox("Server Startup Error", "Failed to start local server:\n" + err.message);
-  }
-  createWindow();
+  const serverUrl = await startInternalServer();
+  createWindow(serverUrl);
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+      createWindow(currentServerUrl);
     }
   });
 });
