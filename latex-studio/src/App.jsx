@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 // Important: You must run 'npm install react-pdf'
 import { Document, Page, pdfjs } from 'react-pdf';
 import Editor from "@monaco-editor/react";
+import { compileDocument, pickBackend, useCompilerStatus } from "./compile";
 
 // Import CSS for PDF layers (standard with react-pdf)
 import "react-pdf/dist/Page/AnnotationLayer.css";
@@ -358,7 +359,8 @@ function PDFPage({ pdf, pageNum, scale, synctexData, onPageDoubleClick, onRegist
         marginBottom: "24px",
         display: "flex",
         flexDirection: "column",
-        alignItems: "center"
+        alignItems: "center",
+        margin: "0 auto 24px auto",
       }}
     >
       <div style={{
@@ -404,6 +406,8 @@ function CustomPDFViewer({ url, synctexData, onPageDoubleClick, viewerRef }) {
   const canvasRefs = useRef({});
   const visiblePagesRef = useRef({});
   const observerRef = useRef(null);
+  const pageWidthRef = useRef(null);
+  const userAdjustedScaleRef = useRef(false);
 
   // Setup observer to update visible page number during scroll
   useEffect(() => {
@@ -436,6 +440,24 @@ function CustomPDFViewer({ url, synctexData, onPageDoubleClick, viewerRef }) {
       observer.disconnect();
       observerRef.current = null;
     };
+  }, []);
+
+  // ResizeObserver for default fit-to-width
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const container = containerRef.current;
+    const ro = new ResizeObserver(() => {
+      if (pageWidthRef.current && !userAdjustedScaleRef.current && container) {
+        const containerWidth = container.clientWidth;
+        if (containerWidth > 50) {
+          const padding = containerWidth < 500 ? 24 : 40;
+          const fitScale = Math.max(0.2, (containerWidth - padding) / pageWidthRef.current);
+          setScale(Number(fitScale.toFixed(2)));
+        }
+      }
+    });
+    ro.observe(container);
+    return () => ro.disconnect();
   }, []);
 
   const observePage = useCallback((el) => {
@@ -509,6 +531,25 @@ function CustomPDFViewer({ url, synctexData, onPageDoubleClick, viewerRef }) {
 
         const loadingTask = pdfjs.getDocument(url);
         const pdfDoc = await loadingTask.promise;
+
+        let pageWidthAt1 = 595.28;
+        try {
+          const firstPage = await pdfDoc.getPage(1);
+          const unscaledViewport = firstPage.getViewport({ scale: 1.0 });
+          pageWidthAt1 = unscaledViewport.width;
+        } catch (e) {
+          console.warn("Could not retrieve unscaled page viewport:", e);
+        }
+        pageWidthRef.current = pageWidthAt1;
+        userAdjustedScaleRef.current = false;
+
+        if (containerRef.current) {
+          const containerWidth = containerRef.current.clientWidth;
+          const padding = containerWidth < 500 ? 24 : 40;
+          const fitScale = Math.max(0.2, (containerWidth - padding) / pageWidthAt1);
+          setScale(Number(fitScale.toFixed(2)));
+        }
+
         setPdf(pdfDoc);
         setNumPages(pdfDoc.numPages);
         setPageNumber(1);
@@ -538,6 +579,16 @@ function CustomPDFViewer({ url, synctexData, onPageDoubleClick, viewerRef }) {
     transition: "all 0.2s",
   };
 
+  const handleZoomIn = () => {
+    userAdjustedScaleRef.current = true;
+    setScale((s) => Math.min(3.0, Number((s + 0.1).toFixed(2))));
+  };
+
+  const handleZoomOut = () => {
+    userAdjustedScaleRef.current = true;
+    setScale((s) => Math.max(0.3, Number((s - 0.1).toFixed(2))));
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "#0c0c14" }}>
       <div style={{
@@ -557,22 +608,34 @@ function CustomPDFViewer({ url, synctexData, onPageDoubleClick, viewerRef }) {
           </span>
         </div>
 
-        <span style={{ fontSize: 9, color: "var(--primary-solid)", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 }}>
-          Double Click Preview to Sync Editor
-        </span>
+        {synctexData && (
+          <span style={{ fontSize: 9, color: "var(--primary-solid)", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 }}>
+            Double Click Preview to Sync Editor
+          </span>
+        )}
 
         <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-          <button onClick={() => setScale(s => Math.max(0.5, s - 0.1))} style={controlBtnStyle}>−</button>
+          <button onClick={handleZoomOut} style={controlBtnStyle}>−</button>
           <span style={{ fontSize: "12px", color: "#a0a0b0", minWidth: "40px", textAlign: "center" }}>
             {Math.round(scale * 100)}%
           </span>
-          <button onClick={() => setScale(s => Math.min(3.0, s + 0.1))} style={controlBtnStyle}>+</button>
+          <button onClick={handleZoomIn} style={controlBtnStyle}>+</button>
         </div>
       </div>
 
       <div
         ref={containerRef}
-        style={{ flex: 1, overflow: "auto", padding: "20px", display: "flex", flexDirection: "column", alignItems: "center", position: "relative" }}
+        style={{
+          flex: 1,
+          overflow: "auto",
+          padding: "16px",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "flex-start",
+          position: "relative",
+          width: "100%",
+          boxSizing: "border-box",
+        }}
       >
         {loading ? (
           <div style={{ color: "var(--primary-solid)", marginTop: 40, fontSize: 13, fontWeight: 500, display: "flex", alignItems: "center", gap: 10 }}>
@@ -586,7 +649,14 @@ function CustomPDFViewer({ url, synctexData, onPageDoubleClick, viewerRef }) {
           </div>
         ) : (
           pdf && (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: "100%" }}>
+            <div style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              minWidth: "100%",
+              width: "max-content",
+              margin: "0 auto",
+            }}>
               {Array.from({ length: numPages || 0 }, (_, i) => i + 1).map(pageNum => (
                 <PDFPage
                   key={pageNum}
@@ -747,40 +817,61 @@ export default function LaTeXApp() {
   const [deleteTargetFile, setDeleteTargetFile] = useState(null);
   const [toastMessage, setToastMessage] = useState(null);
   const [synctexData, setSynctexData] = useState(null);
-  const [serverOnline, setServerOnline] = useState(false);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const dragCounterRef = useRef(0);
-  const [apiUrlState, setApiUrlState] = useState(() => {
-    if (typeof window !== "undefined" && window.location.origin && window.location.origin.startsWith("http")) {
-      return window.location.origin;
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [showOverflowMenu, setShowOverflowMenu] = useState(false);
+  const overflowMenuRef = useRef(null);
+  const pdfUrlRef = useRef(null);
+
+  const hasBinaryFiles = projectMode && projectFiles.some(f => f.isBinary || (typeof f.content === "string" && f.content.startsWith("data:") && f.content.includes(";base64,")));
+  const activeBackend = pickBackend({ engine: compileEngine, mode, hasBinaryFiles });
+  const { status: compilerStatus, probeNow } = useCompilerStatus(activeBackend);
+
+  const updatePdfBlob = useCallback((blob) => {
+    if (pdfUrlRef.current && pdfUrlRef.current.startsWith("blob:")) {
+      URL.revokeObjectURL(pdfUrlRef.current);
     }
-    return import.meta.env.VITE_API_BASE_URL || "http://localhost:2345";
-  });
+    if (!blob) {
+      pdfUrlRef.current = null;
+      setPdfUrl(null);
+      return;
+    }
+    const newUrl = URL.createObjectURL(blob);
+    pdfUrlRef.current = newUrl;
+    setPdfUrl(newUrl);
+  }, []);
 
   useEffect(() => {
-    const currentOrigin = (typeof window !== "undefined" && window.location.origin && window.location.origin.startsWith("http"))
-      ? window.location.origin
-      : "http://localhost:2345";
-
-    const verifyServerHealth = () => {
-      fetch(`${currentOrigin}/health`, { mode: "cors" })
-        .then(res => {
-          if (res.ok) {
-            setApiUrlState(currentOrigin);
-            setServerOnline(true);
-          } else {
-            setServerOnline(false);
-          }
-        })
-        .catch(() => {
-          setServerOnline(false);
-        });
+    return () => {
+      if (pdfUrlRef.current && pdfUrlRef.current.startsWith("blob:")) {
+        URL.revokeObjectURL(pdfUrlRef.current);
+      }
     };
-
-    verifyServerHealth();
-    const timer = setInterval(verifyServerHealth, 8000);
-    return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape") {
+        setSidebarOpen(false);
+        setShowOverflowMenu(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (overflowMenuRef.current && !overflowMenuRef.current.contains(e.target)) {
+        setShowOverflowMenu(false);
+      }
+    };
+    if (showOverflowMenu) {
+      document.addEventListener("mousedown", handleClickOutside);
+      return () => document.removeEventListener("mousedown", handleClickOutside);
+    }
+  }, [showOverflowMenu]);
 
   const mainContainerRef = useRef(null);
   const editorRef = useRef(null);
@@ -844,12 +935,14 @@ export default function LaTeXApp() {
   }, [projectMode, mode, projectFiles, activeFileId, rootFileId, basicCode]);
 
   const lineCount = code.split("\n").length;
+  const charCount = code ? code.replace(/\r?\n$/, "").length : 0;
+  const wordCount = code ? (code.trim().match(/\S+/g) || []).length : 0;
 
   // Toast notification
-  const showToast = (message) => {
+  const showToast = useCallback((message) => {
     setToastMessage(message);
     setTimeout(() => setToastMessage(null), 2500);
-  };
+  }, []);
 
   // Drag and Drop File Processor
   const processDroppedFiles = useCallback((fileList) => {
@@ -952,7 +1045,7 @@ export default function LaTeXApp() {
 
       showToast(`Imported ${loadedFiles.length} file${loadedFiles.length > 1 ? "s" : ""} via Drag & Drop!`);
     });
-  }, []);
+  }, [showToast]);
 
   // Global Drag and Drop event listeners
   useEffect(() => {
@@ -1068,42 +1161,37 @@ export default function LaTeXApp() {
     setError(null);
     setCompileLog(null);
     setShowFullLog(false);
-    setPdfUrl(null);
+    updatePdfBlob(null);
     setCompiledWith(currentMode === 'latex' ? currentEngine : 'html');
 
     const activeF = files.find(f => f.id === actId) || files.find(f => !f.isBinary) || files[0];
     const compileCode = isProj ? activeF.content : codeRef.current;
+    const mainName = isProj ? activeF.name : (currentMode === 'latex' ? 'document.tex' : 'index.html');
+    const hasBinary = isProj && files.some(f => f.isBinary || (typeof f.content === 'string' && f.content.startsWith('data:') && f.content.includes(';base64,')));
     const filesData = isProj
-      ? files.filter(f => f.id !== activeF.id).map(f => ({ path: f.name, content: f.content }))
+      ? files.filter(f => f.id !== activeF.id).map(f => ({ path: f.name, content: f.content, isBinary: Boolean(f.isBinary) }))
       : null;
 
-    const url = currentMode === 'latex'
-      ? `${apiUrlState}/compile`
-      : `${apiUrlState}/compile-html`;
-    const body = currentMode === 'latex'
-      ? JSON.stringify({ code: compileCode, engine: currentEngine, files: filesData })
-      : JSON.stringify({ html: compileCode });
+    probeNow();
 
-    fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body,
+    compileDocument({
+      mainName,
+      mainCode: compileCode,
+      files: filesData,
+      engine: currentEngine,
+      mode: currentMode,
+      hasBinaryFiles: hasBinary,
     })
-      .then((res) => {
-        setServerOnline(true);
-        if (!res.ok) {
-          return res.json().then((err) => { throw err; });
-        }
-        return res.json();
-      })
       .then((data) => {
-        if (data.success) {
-          const timestamp = Date.now();
-          const freshUrl = `${apiUrlState}/pdf?v=${data.version}&t=${timestamp}`;
-          setPdfUrl(freshUrl);
+        if (data.ok && data.pdfBlob) {
+          updatePdfBlob(data.pdfBlob);
           setSynctexData(data.synctex || null);
           setActiveTab("preview");
-          showToast("Compiled successfully!");
+          if (data.notice) {
+            showToast(data.notice);
+          } else {
+            showToast("Compiled successfully!");
+          }
 
           // Clear any Monaco error markers
           if (editorRef.current && monacoRef.current) {
@@ -1132,10 +1220,7 @@ export default function LaTeXApp() {
         setCompiling(false);
       })
       .catch((err) => {
-        const msg = err.error || err.log || String(err);
-        setError(msg.includes("Failed to fetch")
-          ? `Could not connect to server. Ensure the backend is running at ${apiUrlState}.`
-          : (err.error || "Compilation failed"));
+        setError(err.message || "Compilation failed");
         setCompileLog(err.log || null);
 
         // Display markers on catch if log is available
@@ -1154,7 +1239,7 @@ export default function LaTeXApp() {
         }
         setCompiling(false);
       });
-  }, [apiUrlState]);
+  }, [probeNow, showToast, updatePdfBlob]);
 
   // ---------- LaTeX pre-compilation checks ----------
   const handleCompile = useCallback(() => {
@@ -1440,7 +1525,7 @@ export default function LaTeXApp() {
     }
     setSuggestions(null);
     setError(null);
-    setPdfUrl(null);
+    updatePdfBlob(null);
   };
 
   // ---------- Template loader ----------
@@ -1461,7 +1546,7 @@ export default function LaTeXApp() {
     setShowTemplateMenu(false);
     setSuggestions(null);
     setError(null);
-    setPdfUrl(null);
+    updatePdfBlob(null);
   };
 
   // ---------- UI labels & icons ----------
@@ -1478,6 +1563,10 @@ export default function LaTeXApp() {
   const htmlTemplateIcons = {
     basic: "🌐", resume: "📝", invoice: "🧾",
   };
+
+  const downloadFileName = projectMode
+    ? ((projectFiles.find(f => f.id === activeFileId) || projectFiles[0])?.name?.replace(/\.[^/.]+$/, "") || "document") + ".pdf"
+    : "document.pdf";
 
   return (
     <div
@@ -1602,7 +1691,7 @@ export default function LaTeXApp() {
 
       {/* ========== REDESIGNED PREMIUM TOP NAVBAR ========== */}
       <header
-        className="glass-card"
+        className="glass-card studio-header"
         style={{
           display: "flex",
           alignItems: "center",
@@ -1617,155 +1706,321 @@ export default function LaTeXApp() {
           top: 0,
           zIndex: 50,
           flexShrink: 0,
+          flexWrap: "nowrap",
           boxShadow: "0 4px 20px rgba(0, 0, 0, 0.15)",
         }}
       >
-        {/* Branding */}
-        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+        {/* Left Branding and Drawer Toggle */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+          <button
+            onClick={() => setSidebarOpen(prev => !prev)}
+            className="glass-btn studio-hamburger-btn"
+            aria-label="Toggle Project Menu"
+            title="Toggle Menu"
+            style={{
+              padding: "7px 10px",
+              borderRadius: 8,
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+            }}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/>
+            </svg>
+          </button>
+
           <img
             src="/TeXForge.png"
             alt="TeXForge Logo"
             style={{
-              width: 38,
-              height: 38,
+              width: 36,
+              height: 36,
               borderRadius: 10,
               objectFit: "cover",
               boxShadow: "0 0 10px rgba(59,130,246,0.2)"
             }}
           />
           <div>
-            <h1 style={{ fontSize: 16, fontWeight: 700, margin: 0, color: "#fff", letterSpacing: -0.3, fontFamily: "'Outfit', sans-serif" }}>
+            <h1 style={{ fontSize: 16, fontWeight: 700, margin: 0, color: "#fff", letterSpacing: -0.3, fontFamily: "'Outfit', sans-serif", whiteSpace: "nowrap" }}>
               TeXForge
             </h1>
-            <span style={{ fontSize: 10, color: "var(--primary-solid)", fontWeight: 600, letterSpacing: 0.5, textTransform: "uppercase" }}>
+            <span className="studio-header-subtitle" style={{ fontSize: 10, color: "var(--primary-solid)", fontWeight: 600, letterSpacing: 0.5, textTransform: "uppercase" }}>
               Enterprise Workspace
             </span>
           </div>
         </div>
 
-        {serverOnline && (
-          <div style={{ display: "flex", alignItems: "center", gap: 8, background: "rgba(16, 185, 129, 0.08)", border: "1px solid rgba(16, 185, 129, 0.2)", padding: "5px 12px", borderRadius: 20 }}>
-            <span className="status-pulse-dot" style={{ width: 7, height: 7, borderRadius: "50%", background: "#10b981" }} />
-            <span style={{ fontSize: 11, color: "#10b981", fontWeight: 500 }}>Backend Server Active</span>
-          </div>
-        )}
+        {/* Compiler Status Pill */}
+        <div
+          className="studio-status-pill"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            background: compilerStatus === "waking"
+              ? "rgba(245, 158, 11, 0.08)"
+              : compilerStatus === "offline"
+              ? "rgba(239, 68, 68, 0.08)"
+              : "rgba(16, 185, 129, 0.08)",
+            border: `1px solid ${
+              compilerStatus === "waking"
+                ? "rgba(245, 158, 11, 0.25)"
+                : compilerStatus === "offline"
+                ? "rgba(239, 68, 68, 0.25)"
+                : "rgba(16, 185, 129, 0.2)"
+            }`,
+            padding: "5px 12px",
+            borderRadius: 20,
+            flexShrink: 0,
+          }}
+        >
+          <span
+            className="status-pulse-dot"
+            style={{
+              width: 7,
+              height: 7,
+              borderRadius: "50%",
+              background: compilerStatus === "waking"
+                ? "#f59e0b"
+                : compilerStatus === "offline"
+                ? "#ef4444"
+                : "#10b981",
+            }}
+          />
+          <span
+            style={{
+              fontSize: 11,
+              color: compilerStatus === "waking"
+                ? "#f59e0b"
+                : compilerStatus === "offline"
+                ? "#ef4444"
+                : "#10b981",
+              fontWeight: 500,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {compilerStatus === "waking"
+              ? "Waking compiler… (can take ~1 min)"
+              : compilerStatus === "offline"
+              ? "Compiler offline"
+              : `Compiler: ${activeBackend?.label || "Ready"}`}
+          </span>
+        </div>
 
         {/* Global actions */}
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          {/* Clear editor */}
-          <button
-            onClick={() => setShowClearConfirm(true)}
-            className="glass-btn"
-            style={{
-              padding: "7px 14px",
-              borderRadius: 8,
-              fontSize: 12,
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              fontWeight: 500,
-            }}
-          >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
-            </svg>
-            Clear Editor
-          </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+          {/* Desktop action buttons */}
+          <div className="studio-desktop-actions" style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {/* Clear editor */}
+            <button
+              onClick={() => setShowClearConfirm(true)}
+              className="glass-btn"
+              aria-label="Clear Editor"
+              title="Clear Editor"
+              style={{
+                padding: "7px 14px",
+                borderRadius: 8,
+                fontSize: 12,
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                fontWeight: 500,
+              }}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+              </svg>
+              <span className="studio-secondary-btn-text">Clear Editor</span>
+            </button>
 
-          {/* Import File */}
-          <label
-            className="glass-btn"
-            style={{
-              padding: "7px 14px",
-              borderRadius: 8,
-              fontSize: 12,
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              fontWeight: 500,
-              cursor: "pointer",
-            }}
-          >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
-            </svg>
-            Import File
-            <input
-              type="file"
-              accept=".tex,.bib,.cls,.sty,.html,.css,.js,.txt"
-              onChange={handleImportFile}
-              style={{ display: "none" }}
-            />
-          </label>
+            {/* Import File */}
+            <label
+              className="glass-btn"
+              aria-label="Import File"
+              title="Import File"
+              style={{
+                padding: "7px 14px",
+                borderRadius: 8,
+                fontSize: 12,
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                fontWeight: 500,
+                cursor: "pointer",
+              }}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+              <span className="studio-secondary-btn-text">Import File</span>
+              <input
+                type="file"
+                accept=".tex,.bib,.cls,.sty,.html,.css,.js,.txt"
+                onChange={handleImportFile}
+                style={{ display: "none" }}
+              />
+            </label>
 
-          {/* Action links */}
-          {pdfUrl && (
-            <>
-              <a
-                href={`${apiUrlState}/pdf`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="glass-btn"
+            {/* Action links */}
+            {pdfUrl && (
+              <>
+                <a
+                  href={pdfUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="glass-btn"
+                  aria-label="Open PDF"
+                  title="Open PDF"
+                  style={{
+                    textDecoration: "none",
+                    padding: "7px 14px",
+                    borderRadius: 8,
+                    fontSize: 12,
+                    color: "var(--primary-solid)",
+                    fontWeight: 600,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  <span>↗</span>
+                  <span className="studio-secondary-btn-text">Open</span>
+                </a>
+                <a
+                  href={pdfUrl}
+                  download={downloadFileName}
+                  aria-label={downloadFileName}
+                  title={downloadFileName}
+                  style={{
+                    background: "rgba(16, 185, 129, 0.12)",
+                    border: "1px solid rgba(16, 185, 129, 0.25)",
+                    color: "#10b981",
+                    padding: "7px 14px",
+                    borderRadius: 8,
+                    fontSize: 12,
+                    fontWeight: 600,
+                    textDecoration: "none",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  <span>⬇</span>
+                  <span className="studio-secondary-btn-text">Download</span>
+                </a>
+              </>
+            )}
+          </div>
+
+          {/* Mobile overflow menu */}
+          <div className="studio-mobile-actions" style={{ display: "none", alignItems: "center", gap: 8 }}>
+            <div style={{ position: "relative" }} ref={overflowMenuRef}>
+              <button
+                onClick={() => setShowOverflowMenu(prev => !prev)}
+                className="glass-btn studio-overflow-trigger"
+                aria-label="More actions"
+                title="More actions"
                 style={{
-                  textDecoration: "none",
-                  padding: "7px 14px",
+                  padding: "7px 12px",
                   borderRadius: 8,
-                  fontSize: 12,
-                  color: "var(--primary-solid)",
-                  fontWeight: 600,
+                  fontSize: 16,
+                  fontWeight: 700,
                   display: "flex",
                   alignItems: "center",
-                  gap: 6,
+                  justifyContent: "center",
+                  cursor: "pointer",
+                  lineHeight: 1,
                 }}
               >
-                <span>↗ Open</span>
-              </a>
-              <a
-                href={`${apiUrlState}/download?name=${encodeURIComponent(
-                  projectMode
-                    ? ((projectFiles.find(f => f.id === activeFileId) || projectFiles[0])?.name?.replace(/\.[^/.]+$/, "") || "document") + ".pdf"
-                    : "document.pdf"
-                )}`}
-                download={
-                  projectMode
-                    ? ((projectFiles.find(f => f.id === activeFileId) || projectFiles[0])?.name?.replace(/\.[^/.]+$/, "") || "document") + ".pdf"
-                    : "document.pdf"
-                }
-                style={{
-                  background: "rgba(16, 185, 129, 0.12)",
-                  border: "1px solid rgba(16, 185, 129, 0.25)",
-                  color: "#10b981",
-                  padding: "7px 14px",
-                  borderRadius: 8,
-                  fontSize: 12,
-                  fontWeight: 600,
-                  textDecoration: "none",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                }}
-                title={
-                  projectMode
-                    ? `Download ${((projectFiles.find(f => f.id === activeFileId) || projectFiles[0])?.name?.replace(/\.[^/.]+$/, "") || "document")}.pdf`
-                    : "Download document.pdf"
-                }
-              >
-                <span>⬇ Download</span>
-              </a>
-            </>
-          )}
+                ⋯
+              </button>
+              {showOverflowMenu && (
+                <div
+                  className="glass-card studio-overflow-dropdown"
+                  style={{
+                    position: "absolute",
+                    top: "calc(100% + 8px)",
+                    right: 0,
+                    minWidth: 170,
+                    background: "rgba(15, 15, 25, 0.96)",
+                    backdropFilter: "blur(16px)",
+                    WebkitBackdropFilter: "blur(16px)",
+                    border: "1px solid rgba(255, 255, 255, 0.1)",
+                    borderRadius: 10,
+                    boxShadow: "0 10px 30px rgba(0,0,0,0.5)",
+                    padding: "6px",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 4,
+                    zIndex: 100,
+                  }}
+                >
+                  <button
+                    onClick={() => { setShowClearConfirm(true); setShowOverflowMenu(false); }}
+                    className="glass-btn"
+                    style={{ width: "100%", justifyContent: "flex-start", padding: "8px 12px", fontSize: 12, borderRadius: 6 }}
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+                    </svg>
+                    Clear Editor
+                  </button>
+                  <label
+                    className="glass-btn"
+                    style={{ width: "100%", justifyContent: "flex-start", padding: "8px 12px", fontSize: 12, borderRadius: 6, cursor: "pointer" }}
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+                    </svg>
+                    Import File
+                    <input
+                      type="file"
+                      accept=".tex,.bib,.cls,.sty,.html,.css,.js,.txt"
+                      onChange={(e) => { handleImportFile(e); setShowOverflowMenu(false); }}
+                      style={{ display: "none" }}
+                    />
+                  </label>
+                  {pdfUrl && (
+                    <>
+                      <a
+                        href={pdfUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={() => setShowOverflowMenu(false)}
+                        className="glass-btn"
+                        style={{ width: "100%", justifyContent: "flex-start", padding: "8px 12px", fontSize: 12, borderRadius: 6, textDecoration: "none", color: "var(--primary-solid)" }}
+                      >
+                        ↗ Open PDF
+                      </a>
+                      <a
+                        href={pdfUrl}
+                        download={downloadFileName}
+                        onClick={() => setShowOverflowMenu(false)}
+                        className="glass-btn"
+                        style={{ width: "100%", justifyContent: "flex-start", padding: "8px 12px", fontSize: 12, borderRadius: 6, textDecoration: "none", color: "#10b981" }}
+                      >
+                        ⬇ Download PDF
+                      </a>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
 
           {/* Compile button */}
           <button
             onClick={handleCompile}
             disabled={compiling}
+            className="studio-compile-btn"
             style={{
               background: compiling
                 ? "rgba(40, 40, 55, 0.4)"
                 : "var(--primary-solid)",
               border: "none",
               color: "#fff",
-              padding: "8px 20px",
+              padding: "8px 18px",
               borderRadius: 8,
               fontSize: 12,
               fontWeight: 600,
@@ -1773,6 +2028,8 @@ export default function LaTeXApp() {
               display: "flex",
               alignItems: "center",
               gap: 8,
+              flexShrink: 0,
+              whiteSpace: "nowrap",
               transition: "all 0.15s ease",
             }}
           >
@@ -1794,7 +2051,7 @@ export default function LaTeXApp() {
             ) : (
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <span>▶ Compile</span>
-                <span style={{ fontSize: 9, opacity: 0.9, background: "rgba(255,255,255,0.15)", color: "#fff", padding: "2px 6px", borderRadius: 4, fontWeight: 500 }}>Ctrl+Enter</span>
+                <span className="studio-secondary-btn-text studio-compile-shortcut" style={{ fontSize: 9, opacity: 0.9, background: "rgba(255,255,255,0.15)", color: "#fff", padding: "2px 6px", borderRadius: 4, fontWeight: 500 }}>Ctrl+Enter</span>
               </div>
             )}
           </button>
@@ -2291,11 +2548,17 @@ export default function LaTeXApp() {
       </div>
 
       {/* Main content body containing left sidebar and workspace */}
-      <div style={{ display: "flex", flex: 1, overflow: "hidden", minHeight: 0, width: "100%" }}>
+      <div style={{ display: "flex", flex: 1, overflow: "hidden", minHeight: 0, width: "100%", position: "relative" }}>
         
+        {/* Backdrop for mobile off-canvas drawer */}
+        <div
+          className={`studio-sidebar-backdrop ${sidebarOpen ? "active" : ""}`}
+          onClick={() => setSidebarOpen(false)}
+        />
+
         {/* ========== SLICK LEFT SIDEBAR PANEL ========== */}
         <aside
-          className="glass-card"
+          className={`glass-card studio-sidebar ${sidebarOpen ? "open" : ""}`}
           style={{
             width: 280,
             flexShrink: 0,
@@ -2312,6 +2575,18 @@ export default function LaTeXApp() {
             overflowY: "auto",
           }}
         >
+          {/* Mobile drawer header with close button */}
+          <div className="studio-sidebar-mobile-header" style={{ display: "none", justifyContent: "space-between", alignItems: "center", marginBottom: -6 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>Project & Settings</span>
+            <button
+              onClick={() => setSidebarOpen(false)}
+              className="glass-btn"
+              aria-label="Close sidebar"
+              style={{ padding: "4px 8px", fontSize: 12, borderRadius: 6 }}
+            >
+              ✕
+            </button>
+          </div>
           {/* Project Mode Toggle */}
           <div>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
@@ -2664,9 +2939,13 @@ export default function LaTeXApp() {
               <span>Lines:</span>
               <span style={{ fontWeight: 600, color: "#fff" }}>{lineCount}</span>
             </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#94a3b8", marginBottom: 4 }}>
+              <span>Words:</span>
+              <span style={{ fontWeight: 600, color: "#fff" }}>{wordCount}</span>
+            </div>
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#94a3b8" }}>
               <span>Characters:</span>
-              <span style={{ fontWeight: 600, color: "#fff" }}>{code.length}</span>
+              <span style={{ fontWeight: 600, color: "#fff" }}>{charCount}</span>
             </div>
           </div>
         </aside>
@@ -2705,11 +2984,13 @@ export default function LaTeXApp() {
                 <div style={{ flex: 1, position: "relative", height: "100%" }}>
                   {!code && (
                     <div
+                      className="studio-editor-placeholder"
                       style={{
                         position: "absolute",
                         left: 60,
                         top: 8,
-                        color: "rgba(255, 255, 255, 0.18)",
+                        color: "rgba(255, 255, 255, 0.45)",
+                        fontStyle: "italic",
                         fontFamily: "Fira Code, JetBrains Mono, source-code-pro, Menlo, Monaco, Consolas, monospace",
                         fontSize: 13,
                         lineHeight: "20px",
@@ -2719,9 +3000,9 @@ export default function LaTeXApp() {
                       }}
                     >
                       {mode === 'latex' ? (
-                        `\\documentclass{article}\n\\begin{document}\n  % Start typing your LaTeX code here...\n\\end{document}`
+                        `Empty document. Pick a template or start typing:\n\n\\documentclass{article}\n\\begin{document}\n  % Start typing your LaTeX code here...\n\\end{document}`
                       ) : (
-                        `<!DOCTYPE html>\n<html>\n<body>\n  <!-- Start typing your HTML code here... -->\n</body>\n</html>`
+                        `Empty document. Pick a template or start typing:\n\n<!DOCTYPE html>\n<html>\n<body>\n  <!-- Start typing your HTML code here... -->\n</body>\n</html>`
                       )}
                     </div>
                   )}
@@ -2960,7 +3241,7 @@ export default function LaTeXApp() {
                     Workspace is ready. Press <strong style={{ color: "var(--primary-solid)" }}>Compile</strong> to generate preview.
                   </div>
                   <div style={{ fontSize: 10, color: "#334155" }}>
-                    Server Node: {apiUrlState}
+                    Compiler: {activeBackend?.label || "Ready"}
                   </div>
                 </div>
               )
@@ -2976,7 +3257,100 @@ export default function LaTeXApp() {
           to { opacity: 1; transform: translateX(-50%) translateY(0); }
         }
         ::selection { background: rgba(59, 130, 246, 0.2); }
+        .studio-editor-placeholder { font-style: italic !important; }
 
+        .studio-hamburger-btn {
+          display: none !important;
+        }
+        .studio-mobile-actions {
+          display: none !important;
+        }
+        .studio-sidebar-backdrop {
+          display: none !important;
+        }
+
+        /* Mobile (<768px, tested at 390x844) */
+        @media (max-width: 767px) {
+          .studio-header {
+            padding: 8px 10px !important;
+            gap: 6px !important;
+          }
+          .studio-header-subtitle {
+            display: none !important;
+          }
+          .studio-status-pill {
+            display: none !important;
+          }
+          .studio-hamburger-btn {
+            display: flex !important;
+            padding: 6px 8px !important;
+          }
+          .studio-desktop-actions {
+            display: none !important;
+          }
+          .studio-mobile-actions {
+            display: flex !important;
+          }
+          .studio-compile-btn {
+            padding: 7px 12px !important;
+            font-size: 11px !important;
+          }
+          .studio-secondary-btn-text,
+          .studio-compile-shortcut {
+            display: none !important;
+          }
+          .studio-sidebar-mobile-header {
+            display: flex !important;
+          }
+          .studio-sidebar-backdrop {
+            display: none !important;
+            position: fixed !important;
+            inset: 0 !important;
+            background: rgba(0, 0, 0, 0.65) !important;
+            backdrop-filter: blur(4px) !important;
+            -webkit-backdrop-filter: blur(4px) !important;
+            z-index: 99 !important;
+          }
+          .studio-sidebar-backdrop.active {
+            display: block !important;
+          }
+          .studio-sidebar {
+            position: fixed !important;
+            top: 0 !important;
+            bottom: 0 !important;
+            left: 0 !important;
+            width: 280px !important;
+            height: 100vh !important;
+            z-index: 100 !important;
+            background: rgba(14, 14, 24, 0.98) !important;
+            backdrop-filter: blur(20px) !important;
+            -webkit-backdrop-filter: blur(20px) !important;
+            box-shadow: 4px 0 30px rgba(0,0,0,0.7) !important;
+            transform: translateX(-100%) !important;
+            transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1) !important;
+          }
+          .studio-sidebar.open {
+            transform: translateX(0) !important;
+          }
+          .studio-tabbar {
+            width: 100% !important;
+          }
+          .studio-workspace {
+            width: 100% !important;
+          }
+          .studio-editor-pane {
+            width: 100% !important;
+          }
+        }
+
+        /* Tablet (768px - 1023px) */
+        @media (min-width: 768px) and (max-width: 1023px) {
+          .studio-secondary-btn-text {
+            display: none !important;
+          }
+        }
+
+        /* Desktop (≥1024px) */
         @media (min-width: 1024px) {
           .studio-tabbar {
             display: none !important;

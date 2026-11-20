@@ -177,7 +177,22 @@ function compileLaTeX(code, engine, files, callback) {
   const pdfFile = path.join(tmpDir, "document.pdf");
   const logFile = path.join(tmpDir, "document.log");
 
-  fs.writeFileSync(texFile, code, "utf-8");
+  let codeToWrite = code;
+
+  if (hasLocalFonts && (engine === "xelatex" || engine === "lualatex")) {
+    try {
+      const projectFontFiles = fs.readdirSync(PROJECT_FONTS_DIR).filter(f => /\.(ttf|otf)$/i.test(f));
+      for (const fontFile of projectFontFiles) {
+        const ext = path.extname(fontFile);
+        const baseName = path.basename(fontFile, ext);
+        const escaped = baseName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const re = new RegExp(`(\\\\(?:setmainfont|setsansfont|setmonofont|(?:newfontfamily|setfontfamily)\\s*\\\\[a-zA-Z]+)(?:\\[[^\\]]*\\])?\\{)(${escaped})(\\})`, "g");
+        codeToWrite = codeToWrite.replace(re, (m, p1, p2, p3) => p1 + fontFile + p3);
+      }
+    } catch (e) {}
+  }
+
+  fs.writeFileSync(texFile, codeToWrite, "utf-8");
 
   const engineCmd = { pdflatex: "pdflatex", xelatex: "xelatex", lualatex: "lualatex" }[engine] || "pdflatex";
   const env = { ...process.env };
